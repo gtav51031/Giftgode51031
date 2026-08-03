@@ -1,4 +1,4 @@
-import os  # ✅ تم إضافة هذه المكتبة للتعامل مع البيئة
+import os
 import telebot
 import requests
 import json
@@ -12,7 +12,6 @@ from flask import Flask, jsonify
 # ============================================
 # 🔐 إعدادات البوت الأساسية (محمية بالبيئة)
 # ============================================
-# ✅ الآن يقرأ التوكنات من البيئة أولاً، فإن لم يجدها يستخدم القيم الافتراضية (الخاصة بك)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
 OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
@@ -141,7 +140,6 @@ BACKUP_PROXIES = [
 ]
 
 def load_proxies():
-    """تحميل البروكسيات مع إصلاح التنسيق تلقائياً (إضافة http:// إذا كانت مفقودة)"""
     if os.path.exists(PROXIES_FILE):
         with open(PROXIES_FILE, "r") as f:
             proxies = [p.strip() for p in f.readlines() if p.strip()]
@@ -240,11 +238,9 @@ def save_referral_data(data):
         json.dump(data, f, indent=2)
 
 def get_referral_link(user_id):
-    """توليد رابط الإحالة الصحيح الخاص بالمستخدم"""
     return f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
 def process_referral_new_user(new_user_id, referrer_id):
-    """معالجة الإحالة بعد التأكد من الاشتراك في القناة"""
     if str(new_user_id) == str(referrer_id):
         return False, "❌ لا يمكنك إحالة نفسك!"
 
@@ -408,7 +404,7 @@ def attack_loop(user_id, chat_id):
                 f"`{referral_link}`\n\n"
                 f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
                 reply_markup=keyboard,
-                parse_mode="Markdown"
+                parse_mode=None
             )
             break
 
@@ -601,7 +597,7 @@ def get_my_id(message):
         f"🔑 **OWNER_ID في الكود:** `{OWNER_ID}`\n"
         f"📌 **هل هما متطابقان؟** {'✅ نعم' if str(user_id) == str(OWNER_ID) else '❌ لا'}\n\n"
         f"إذا كانا غير متطابقين، غيّر `OWNER_ID` في الكود إلى `{user_id}`.",
-        parse_mode="Markdown"
+        parse_mode=None
     )
 
 # ============================================
@@ -636,7 +632,7 @@ def show_owner_menu(message):
     keyboard.add(btn_reset_points)
     keyboard.add(btn_help)
 
-    bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode="Markdown")
+    bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
 
 # ============================================
 # 🖱️ معالجة الأزرار
@@ -648,7 +644,6 @@ def handle_callback(call):
 
     update_user_activity(user_id)
 
-    # ========== تأكيد الإحالة بعد الاشتراك ==========
     if call.data.startswith("confirm_referral_"):
         referrer_id = int(call.data.replace("confirm_referral_", ""))
         if not is_subscribed_telegram(user_id):
@@ -663,7 +658,6 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # ========== أزرار المالك ==========
     if call.data == "owner_commands":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -688,7 +682,7 @@ def handle_callback(call):
             text = "📋 **القنوات الإجبارية الإضافية:**\n\n"
             for i, ch in enumerate(channels, 1):
                 text += f"{i}. @{ch}\n"
-            bot.reply_to(call.message, text, parse_mode="Markdown")
+            bot.reply_to(call.message, text, parse_mode=None)
         return
 
     if call.data == "owner_remove_channel":
@@ -798,10 +792,9 @@ def handle_callback(call):
             text += f"👤 {name} (@{username})\n"
             text += f"   📌 إحالات: {count} | 💎 ربح: {points_earned}\n"
             text += "   -------------------------\n"
-        bot.reply_to(call.message, text, parse_mode="Markdown")
+        bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # ========== إعادة تعيين نقاط الجميع ==========
     if call.data == "owner_reset_points":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -826,7 +819,6 @@ def handle_callback(call):
         bot.reply_to(call.message, f"✅ تم إعادة تعيين نقاط **{updated_count}** مستخدم بنجاح!\nالقاعدة الجديدة: النقاط = 50 - عدد الإحالات الناجحة (بحد أدنى 0).")
         return
 
-    # ========== إحصائيات عامة ==========
     if call.data == "owner_stats":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -842,11 +834,11 @@ def handle_callback(call):
                         "📊 **لا يوجد مستخدمون مسجلون حتى الآن.**\n\nقم بدعوة أصدقائك لاستخدام البوت عن طريق إرسال `/start`.",
                         chat_id=chat_id,
                         message_id=loading_msg.message_id,
-                        parse_mode='HTML'
+                        parse_mode=None
                     )
                     return
 
-                text = "<b>📊 الإحصائيات العامة</b>\n\n"
+                text = "📊 **الإحصائيات العامة**\n\n"
                 total_users = len(sessions)
                 active = 0
                 total_success = 0
@@ -882,7 +874,7 @@ def handle_callback(call):
                 if len(users_data) > 20:
                     text += f"\n... وعرض {len(users_data) - 20} مستخدم آخر (الأقل إحالات).\n"
 
-                text += f"\n<b>📊 الملخص:</b>\n"
+                text += f"\n📊 **الملخص:**\n"
                 text += f"👥 إجمالي المستخدمين: {total_users}\n"
                 text += f"🟢 النشطين (مشتركين): {active}\n"
                 text += f"🔴 غير النشطين (غير مشتركين): {total_users - active}\n"
@@ -897,17 +889,17 @@ def handle_callback(call):
                         text[:4000],
                         chat_id=chat_id,
                         message_id=loading_msg.message_id,
-                        parse_mode='HTML'
+                        parse_mode=None
                     )
                     remaining = text[4000:]
                     for i in range(0, len(remaining), 4000):
-                        bot.send_message(chat_id, remaining[i:i+4000], parse_mode='HTML')
+                        bot.send_message(chat_id, remaining[i:i+4000])
                 else:
                     bot.edit_message_text(
                         text,
                         chat_id=chat_id,
                         message_id=loading_msg.message_id,
-                        parse_mode='HTML'
+                        parse_mode=None
                     )
 
                 print(f"✅ تم إرسال الإحصائيات بنجاح. عدد المستخدمين: {total_users}")
@@ -918,7 +910,7 @@ def handle_callback(call):
                         f"⚠️ حدث خطأ أثناء جمع الإحصائيات:\n{str(e)[:200]}",
                         chat_id=chat_id,
                         message_id=loading_msg.message_id,
-                        parse_mode='HTML'
+                        parse_mode=None
                     )
                 except:
                     bot.send_message(chat_id, f"⚠️ حدث خطأ: {str(e)[:100]}")
@@ -926,7 +918,6 @@ def handle_callback(call):
         threading.Thread(target=send_stats, daemon=True).start()
         return
 
-    # ========== ✅ المستخدمون النشطون ==========
     if call.data == "owner_active_users":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -950,10 +941,9 @@ def handle_callback(call):
             else:
                 text += f"• {name} - نشط {time_ago}\n"
 
-        bot.reply_to(call.message, text, parse_mode="Markdown")
+        bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # ========== عرض رابط الإحالة الخاص بالمستخدم ==========
     if call.data == "my_referral":
         referral_link = get_referral_link(user_id)
         count, points = get_referral_stats(user_id)
@@ -965,7 +955,7 @@ def handle_callback(call):
             f"💎 النقاط المكتسبة: {points}\n\n"
             f"💡 انشر هذا الرابط لأصدقائك، كل شخص ينضم من خلال الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!"
         )
-        bot.reply_to(call.message, text, parse_mode="Markdown")
+        bot.reply_to(call.message, text, parse_mode=None)
         return
 
     if call.data == "owner_clear_sessions":
@@ -997,10 +987,9 @@ def handle_callback(call):
             "/start - القائمة الرئيسية\n"
             "/get_my_id - معرفة رقمك"
         )
-        bot.reply_to(call.message, help_text, parse_mode="Markdown")
+        bot.reply_to(call.message, help_text, parse_mode=None)
         return
 
-    # ========== أزرار التحقق من الاشتراك ==========
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -1028,7 +1017,6 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ اشترك في قناة التلجرام أولاً!", show_alert=True)
         return
 
-    # ========== أزرار المستخدمين ==========
     if call.data == "set_referral":
         bot.answer_callback_query(call.id, "✏️ أرسل كود الإحالة الجديد:")
         msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة (يمكن أن يحتوي على أرقام وحروف):")
@@ -1054,7 +1042,7 @@ def handle_callback(call):
                 f"`{referral_link}`\n\n"
                 f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
                 reply_markup=keyboard,
-                parse_mode="Markdown"
+                parse_mode=None
             )
             bot.answer_callback_query(call.id, "⚠️ نقاطك 0! شارك رابط الإحالة للحصول على نقاط جديدة.", show_alert=True)
             return
@@ -1144,7 +1132,7 @@ def broadcast_step(message):
     success_count = 0
     for user_id_str in sessions.keys():
         try:
-            bot.send_message(int(user_id_str), f"📢 **إعلان من المالك:**\n\n{text}", parse_mode="Markdown")
+            bot.send_message(int(user_id_str), f"📢 **إعلان من المالك:**\n\n{text}", parse_mode=None)
             success_count += 1
             time.sleep(0.1)
         except Exception as e:
