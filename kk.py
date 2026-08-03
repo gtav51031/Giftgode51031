@@ -1339,4 +1339,4 @@ if __name__ == "__main__":
             bot.polling(none_stop=True, interval=1)
         except Exception as e:
             print(f"⚠️ خطأ في البوت: {e}")
-            time.sleep(5)import
+            time.sleep(5)
