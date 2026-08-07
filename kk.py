@@ -68,24 +68,18 @@ def get_user_file(user_id, filename):
     return os.path.join(DATA_DIR, f"{filename}_{user_id}.json")
 
 # ============================================
-# ✅ دالة تحميل النقاط التلقائية
+# ✅ دوال النقاط (معدلة بشكل نهائي)
 # ============================================
 def load_user_points(user_id):
-    used = load_used_numbers(user_id)
-    successes = len(used.get("success", []))
-    correct_points = max(0, INITIAL_POINTS - successes)
-
+    """تحميل النقاط المخزنة مباشرة دون أي إعادة حساب"""
     filepath = get_user_file(user_id, "points")
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
             data = json.load(f)
-            current_points = data.get("points", INITIAL_POINTS)
-            if current_points != correct_points:
-                save_user_points(user_id, correct_points)
-            return correct_points
+            return data.get("points", INITIAL_POINTS)
     else:
-        save_user_points(user_id, correct_points)
-        return correct_points
+        save_user_points(user_id, INITIAL_POINTS)
+        return INITIAL_POINTS
 
 def save_user_points(user_id, points):
     filepath = get_user_file(user_id, "points")
@@ -133,7 +127,7 @@ def save_user_settings(user_id, data):
         json.dump(data, f, indent=2)
 
 # ============================================
-# 📦 دوال البروكسيات (تم إصلاح التنسيق التلقائي)
+# 📦 دوال البروكسيات (بدون تغيير)
 # ============================================
 BACKUP_PROXIES = [
     "http://20.78.118.91:8561", "http://20.27.11.248:8561", "http://8.215.25.3:2080",
@@ -167,7 +161,7 @@ def save_dead_proxies(dead_list):
         f.write("\n".join(dead_list))
 
 # ============================================
-# 🎯 إعدادات الإحالات
+# 🎯 إعدادات الإحالات (بدون تغيير)
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
 DEFAULT_START = 4084879
@@ -199,7 +193,7 @@ def send_referral(referral_code, user_id, proxy=None):
         return {"success": False, "reason": "proxy_dead", "error": str(e)}
 
 # ============================================
-# 🗂️ دوال القنوات الإضافية
+# 🗂️ دوال القنوات الإضافية (بدون تغيير)
 # ============================================
 def load_extra_channels():
     if os.path.exists(EXTRA_CHANNELS_FILE):
@@ -223,7 +217,7 @@ def is_subscribed_extra(user_id):
     return True, None
 
 # ============================================
-# 👤 نظام الإحالة الداخلي (المُصحح)
+# 👤 نظام الإحالة الداخلي (معدل)
 # ============================================
 def load_referral_data():
     filepath = os.path.join(DATA_DIR, "referral_data.json")
@@ -252,6 +246,7 @@ def process_referral_new_user(new_user_id, referrer_id):
     if str(new_user_id) in referral_data.get("referred_users", {}):
         return False, "⚠️ هذا المستخدم تمت إحالته مسبقاً!"
 
+    # التأكد من وجود بيانات المُحيل
     if str(referrer_id) not in referral_data.get("referrals", {}):
         referral_data.setdefault("referrals", {})[str(referrer_id)] = {
             "count": 0,
@@ -259,14 +254,18 @@ def process_referral_new_user(new_user_id, referrer_id):
             "users": []
         }
 
+    # تحديث بيانات الإحالة
     referral_data["referrals"][str(referrer_id)]["count"] += 1
     referral_data["referrals"][str(referrer_id)]["points_earned"] += 10
     referral_data["referrals"][str(referrer_id)]["users"].append(str(new_user_id))
     referral_data.setdefault("referred_users", {})[str(new_user_id)] = str(referrer_id)
     save_referral_data(referral_data)
 
+    # إضافة 10 نقاط للمُحيل
     current_points = load_user_points(referrer_id)
     save_user_points(referrer_id, current_points + 10)
+
+    # تعيين نقاط ابتدائية للمُحال
     save_user_points(new_user_id, INITIAL_POINTS)
 
     return True, f"✅ تمت الإحالة بنجاح! حصلت على 10 نقاط."
@@ -275,6 +274,33 @@ def get_referral_stats(user_id):
     referral_data = load_referral_data()
     stats = referral_data.get("referrals", {}).get(str(user_id), {"count": 0, "points_earned": 0})
     return stats["count"], stats["points_earned"]
+
+# ============================================
+# دالة تصحيح نقاط الإحالات السابقة (للمالك)
+# ============================================
+def fix_all_referral_points():
+    """
+    تقوم بإعادة حساب نقاط الإحالات لجميع المستخدمين بناءً على البيانات المخزنة.
+    تُضاف النقاط المفقودة إلى الرصيد الحالي.
+    """
+    referral_data = load_referral_data()
+    referrals = referral_data.get("referrals", {})
+    fixed_count = 0
+    for referrer_id_str, data in referrals.items():
+        expected_points = data["count"] * 10
+        current_earned = data.get("points_earned", 0)
+        if current_earned < expected_points:
+            # نحسب الفرق ونضيفه إلى الرصيد
+            diff = expected_points - current_earned
+            # تحديث points_earned في ملف الإحالات
+            referral_data["referrals"][referrer_id_str]["points_earned"] = expected_points
+            # إضافة النقاط إلى رصيد المستخدم
+            uid = int(referrer_id_str)
+            current_points = load_user_points(uid)
+            save_user_points(uid, current_points + diff)
+            fixed_count += 1
+    save_referral_data(referral_data)
+    return fixed_count
 
 # ============================================
 # 🤖 دوال البوت الأساسية
@@ -621,6 +647,7 @@ def show_owner_menu(message):
     btn_active = InlineKeyboardButton("👥 المستخدمون النشطون", callback_data="owner_active_users")
     btn_referral_stats = InlineKeyboardButton("📊 إحصائيات الإحالات", callback_data="owner_referral_stats")
     btn_reset_points = InlineKeyboardButton("🔄 إعادة تعيين النقاط للجميع", callback_data="owner_reset_points")
+    btn_fix_points = InlineKeyboardButton("🔧 تصحيح نقاط الإحالات", callback_data="owner_fix_points")
 
     keyboard.add(btn_add_proxy, btn_bulk_proxy)
     keyboard.add(btn_refresh, btn_list)
@@ -629,7 +656,7 @@ def show_owner_menu(message):
     keyboard.add(btn_add_channel, btn_list_channels)
     keyboard.add(btn_remove_channel, btn_broadcast)
     keyboard.add(btn_active, btn_referral_stats)
-    keyboard.add(btn_reset_points)
+    keyboard.add(btn_reset_points, btn_fix_points)
     keyboard.add(btn_help)
 
     bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
@@ -795,6 +822,20 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
+    # ========== زر تصحيح نقاط الإحالات ==========
+    if call.data == "owner_fix_points":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, "🔧 جاري تصحيح نقاط الإحالات...", show_alert=True)
+        fixed_count = fix_all_referral_points()
+        if fixed_count == 0:
+            bot.reply_to(call.message, "✅ جميع نقاط الإحالات محدثة بالفعل.")
+        else:
+            bot.reply_to(call.message, f"✅ تم تصحيح نقاط **{fixed_count}** مستخدم بناءً على إحالاتهم.\nتم إضافة النقاط المفقودة إلى رصيد كل مستخدم.")
+        return
+
     if call.data == "owner_reset_points":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -810,13 +851,10 @@ def handle_callback(call):
         updated_count = 0
         for user_id_str in sessions.keys():
             uid = int(user_id_str)
-            used = load_used_numbers(uid)
-            successes = len(used.get("success", []))
-            new_points = max(0, 50 - successes)
-            save_user_points(uid, new_points)
+            save_user_points(uid, INITIAL_POINTS)
             updated_count += 1
 
-        bot.reply_to(call.message, f"✅ تم إعادة تعيين نقاط **{updated_count}** مستخدم بنجاح!\nالقاعدة الجديدة: النقاط = 50 - عدد الإحالات الناجحة (بحد أدنى 0).")
+        bot.reply_to(call.message, f"✅ تم إعادة تعيين نقاط **{updated_count}** مستخدم بنجاح!\nالقيمة الجديدة: {INITIAL_POINTS} نقطة.")
         return
 
     if call.data == "owner_stats":
@@ -982,7 +1020,8 @@ def handle_callback(call):
             "🔹 بث رسالة للجميع (زر)\n"
             "🔹 المستخدمون النشطون (زر)\n"
             "🔹 إحصائيات الإحالات (زر)\n"
-            "🔹 إعادة تعيين النقاط للجميع (زر)\n\n"
+            "🔹 إعادة تعيين النقاط للجميع (زر)\n"
+            "🔹 **تصحيح نقاط الإحالات** (زر) ← جديد\n\n"
             "📌 الأوامر النصية:\n"
             "/start - القائمة الرئيسية\n"
             "/get_my_id - معرفة رقمك"
