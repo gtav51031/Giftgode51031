@@ -82,7 +82,7 @@ def format_time_ago(timestamp):
     return f"منذ {hours} ساعة"
 
 # ============================================
-# 📂 دوال البيانات (النقاط، المستخدمون، الإعدادات)
+# 📂 دوال البيانات
 # ============================================
 def load_user_points(user_id):
     filepath = get_user_file(user_id, "points")
@@ -437,7 +437,7 @@ def fix_all_referral_points():
 # 🤖 دوال البوت الأساسية
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-proxies = load_proxies()  # متغير عام
+proxies = load_proxies()
 dead_proxies = load_dead_proxies()
 
 def is_owner(user_id):
@@ -497,7 +497,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# ⚔️ حلقة الهجوم (تدعم الوضعين)
+# ⚔️ حلقة الهجوم
 # ============================================
 attack_status = {}
 
@@ -691,7 +691,7 @@ def start_command(message):
         )
         return
 
-    # القائمة الرئيسية (مع زر تبديل الوضع)
+    # القائمة الرئيسية
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_set_ref = InlineKeyboardButton("🔑 تعيين كود الإحالة", callback_data="set_referral")
     btn_set_start = InlineKeyboardButton("🔢 تعيين رقم البداية", callback_data="set_start")
@@ -747,7 +747,7 @@ def get_my_id(message):
     )
 
 # ============================================
-# 👑 عرض أوامر المالك (مع إحصائيات GiftSheep)
+# 👑 عرض أوامر المالك
 # ============================================
 def show_owner_menu(message):
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -782,11 +782,12 @@ def show_owner_menu(message):
     bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
 
 # ============================================
-# 🖱️ معالج الأزرار
+# 🖱️ معالج الأزرار (مع إعلان global في البداية)
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    global proxies  # ✅ إعلان global في بداية الدالة
+    global proxies  # ✅ يجب أن يكون هذا هو السطر الأول داخل الدالة
+
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -842,7 +843,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 5. تحديث البروكسيات (مع global proxies في الأعلى)
+    # 5. تحديث البروكسيات
     if call.data == "owner_refresh":
         if not is_owner(user_id):
             return
@@ -856,7 +857,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(proxies)}", show_alert=True)
         return
 
-    # باقي الأزرار (مكررة من الكود الأصلي - اختصار للطول)
+    # باقي الأزرار (اختصار)
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -979,7 +980,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # أوامر المالك الإضافية (اختصار)
+    # أوامر المالك الإضافية
     if call.data == "owner_add_channel":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
@@ -1046,7 +1047,6 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, process_bulk_proxies)
         return
 
-    # owner_list, owner_check, owner_clear_dead, owner_referral_stats, owner_fix_points, owner_reset_points, owner_stats, owner_active_users, owner_clear_sessions
     if call.data == "owner_list":
         if not is_owner(user_id): return
         proxies = load_proxies()
@@ -1204,7 +1204,7 @@ def handle_callback(call):
     bot.answer_callback_query(call.id, "⚠️ أمر غير معروف")
 
 # ============================================
-# 📝 دوال الخطوات النصية (المكررة من الكود الأصلي)
+# 📝 دوال الخطوات النصية
 # ============================================
 def add_channel_step(message):
     if not is_owner(message.from_user.id):
@@ -1244,7 +1244,7 @@ def broadcast_step(message):
     bot.reply_to(message, f"✅ تم الإرسال إلى {success_count} من {len(sessions)} مستخدم.")
 
 def add_proxy_step(message):
-    global proxies  # ✅ إعلان global
+    global proxies
     if not is_owner(message.from_user.id):
         return
     proxy = message.text.strip()
@@ -1253,12 +1253,11 @@ def add_proxy_step(message):
     proxies = load_proxies()
     proxies.append(proxy)
     save_proxies(proxies)
-    # تحديث المتغير العام بعد الحفظ
     proxies = load_proxies()
     bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(proxies)}")
 
 def process_bulk_proxies(message):
-    global proxies  # ✅ إعلان global
+    global proxies
     if not is_owner(message.from_user.id):
         return
     if message.document:
@@ -1296,7 +1295,7 @@ def process_bulk_proxies(message):
             current_set.add(p)
             added += 1
     save_proxies(current)
-    proxies = load_proxies()  # تحديث المتغير العام
+    proxies = load_proxies()
     bot.reply_to(message,
         f"✅ تم إضافة {added} بروكسي جديد.\n"
         f"🌐 العدد الإجمالي: {len(proxies)} بروكسي."
@@ -1336,7 +1335,6 @@ def check_proxies(message):
         time.sleep(0.5)
     save_proxies(working)
     save_dead_proxies(dead)
-    # تحديث المتغير العام
     global proxies
     proxies = load_proxies()
     bot.reply_to(message,
