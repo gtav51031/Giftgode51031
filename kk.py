@@ -12,10 +12,10 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
 
 # ============================================
-# 🔐 إعدادات البوت الأساسية (من متغيرات البيئة)
+# 🔐 إعدادات البوت الأساسية
 # ============================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
-OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))
+OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
 CHANNEL_YT = os.environ.get("CHANNEL_YT", "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Rame124673_bot")
@@ -28,10 +28,11 @@ YOUTUBE_VERIFY_DAYS = 7
 EXTRA_CHANNELS_FILE = "extra_channels.json"
 
 # ============================================
-# إعدادات GiftSheep
+# إعدادات GiftSheep (مثل الكود القديم)
 # ============================================
 GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
+GIFTSHEEP_TARGET_CODE = "W27PO5"  # كود الإحالة القديم
 
 # ============================================
 # الوضعيات
@@ -162,9 +163,11 @@ def get_mode_settings(user_id):
         }
     else:
         return {
-            "ref_code": data.get("giftsheep_ref_code", "M25PEO"),
-            "start_number": data.get("giftsheep_start_number", 1),
-            "used_data": load_used_numbers(user_id, MODE_GIFTSHEEP)
+            "ref_code": GIFTSHEEP_TARGET_CODE,  # ✅ كود الإحالة الثابت
+            "start_number": 1,  # ✅ غير مستخدم في GiftSheep (نعتمد على الوقت)
+            "used_data": load_used_numbers(user_id, MODE_GIFTSHEEP),
+            "last_referral_time": data.get("giftsheep_last_referral_time", 0),
+            "daily_count": data.get("giftsheep_daily_count", 0)
         }
 
 def set_mode_setting(user_id, key, value):
@@ -176,13 +179,26 @@ def set_mode_setting(user_id, key, value):
         data[f"giftsheep_{key}"] = value
     save_user_settings(user_id, data)
 
-# ============================================
-# 📦 دوال البروكسيات
-# ============================================
-BACKUP_PROXIES = [
-    "http://20.78.118.91:8561", "http://20.27.11.248:8561", "http://8.215.25.3:2080",
-]
+def update_giftsheep_stats(user_id, success=True):
+    """تحديث إحصائيات GiftSheep (الوقت والعدد اليومي)"""
+    data = load_user_settings(user_id)
+    today = datetime.now().date().isoformat()
+    last_date = data.get("giftsheep_last_date", "")
+    
+    if last_date != today:
+        # يوم جديد، إعادة تعيين العدد اليومي
+        data["giftsheep_daily_count"] = 0
+        data["giftsheep_last_date"] = today
+    
+    if success:
+        data["giftsheep_daily_count"] = data.get("giftsheep_daily_count", 0) + 1
+        data["giftsheep_last_referral_time"] = time.time()
+    
+    save_user_settings(user_id, data)
 
+# ============================================
+# 📦 دوال البروكسيات (غير مستخدمة في GiftSheep)
+# ============================================
 def load_proxies():
     if os.path.exists(PROXIES_FILE):
         with open(PROXIES_FILE, "r") as f:
@@ -194,7 +210,7 @@ def load_proxies():
                 formatted.append(p)
             if formatted:
                 return formatted
-    return BACKUP_PROXIES.copy()
+    return []
 
 def save_proxies(proxies_list):
     with open(PROXIES_FILE, "w") as f:
@@ -209,12 +225,6 @@ def load_dead_proxies():
 def save_dead_proxies(dead_list):
     with open(DEAD_PROXIES_FILE, "w") as f:
         f.write("\n".join(dead_list))
-
-def get_random_proxy():
-    proxies = load_proxies()
-    if proxies:
-        return random.choice(proxies)
-    return None
 
 # ============================================
 # 🎯 دوال الإحالات (GiftCode)
@@ -248,33 +258,23 @@ def send_giftcode_referral(referral_code, user_id, proxy):
         return {"success": False, "reason": "proxy_dead", "error": str(e)}
 
 # ============================================
-# 🐑 دوال الإحالات (GiftSheep)
+# 🐑 دوال الإحالات (GiftSheep) - مثل الكود القديم تماماً
 # ============================================
 def create_giftsheep_account(email, password):
     url = "https://identitytoolkit.googleapis.com/v1/accounts:signUp"
     params = {"key": GIFTSHEEP_FIREBASE_API_KEY}
     payload = {"email": email, "password": password, "returnSecureToken": True}
-    proxy = get_random_proxy()
-    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
-    for attempt in range(3):
-        try:
-            resp = requests.post(url, params=params, json=payload, timeout=30, proxies=proxies_dict)
-            data = resp.json()
-            if resp.status_code == 200:
-                return data
-            else:
-                error_msg = data.get('error', {}).get('message', 'Unknown')
-                if error_msg == "TOO_MANY_ATTEMPTS_TRY_LATER":
-                    proxy = get_random_proxy()
-                    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
-                    time.sleep(5)
-                else:
-                    return {"error": error_msg}
-        except Exception as e:
-            proxy = get_random_proxy()
-            proxies_dict = {"http": proxy, "https": proxy} if proxy else None
-            time.sleep(5)
-    return {"error": "All attempts failed"}
+    
+    try:
+        resp = requests.post(url, params=params, json=payload, timeout=30)
+        data = resp.json()
+        if resp.status_code == 200:
+            return data
+        else:
+            error_msg = data.get('error', {}).get('message', 'Unknown')
+            return {"error": error_msg}
+    except Exception as e:
+        return {"error": str(e)}
 
 def send_giftsheep_referral(access_token, ref_code):
     headers = {
@@ -283,10 +283,9 @@ def send_giftsheep_referral(access_token, ref_code):
         'User-Agent': 'okhttp/3.12.13'
     }
     payload = {"data": {"code": ref_code}}
-    proxy = get_random_proxy()
-    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
+    
     try:
-        resp = requests.post(GIFTSHEEP_REFERRAL_URL, json=payload, headers=headers, timeout=30, proxies=proxies_dict)
+        resp = requests.post(GIFTSHEEP_REFERRAL_URL, json=payload, headers=headers, timeout=30)
         try:
             result = resp.json()
             success = result.get('result', {}).get('success', False)
@@ -315,7 +314,7 @@ def process_referral(user_id, target, proxy):
     if mode == MODE_GIFTCODE:
         result = send_giftcode_referral(ref_code, target, proxy)
     else:  # GiftSheep
-        email = f"test_{uuid.uuid4().hex[:8]}@temp-mail.com"
+        email = f"test_{uuid.uuid4().hex[:8]}@mail.tm"
         password = f"Test@{uuid.uuid4().hex[:6]}"
         auth_data = create_giftsheep_account(email, password)
         if not auth_data or 'error' in auth_data:
@@ -331,6 +330,9 @@ def process_referral(user_id, target, proxy):
     if result.get("success"):
         used_data["success"].append(str(target))
         save_used_numbers(user_id, used_data, mode)
+        # تحديث إحصائيات GiftSheep (الوقت والعدد اليومي)
+        if mode == MODE_GIFTSHEEP:
+            update_giftsheep_stats(user_id, success=True)
     elif result.get("reason") == "already_referred":
         used_data["already"].append(str(target))
         save_used_numbers(user_id, used_data, mode)
@@ -437,8 +439,6 @@ def fix_all_referral_points():
 # 🤖 دوال البوت الأساسية
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-proxies = load_proxies()
-dead_proxies = load_dead_proxies()
 
 def is_owner(user_id):
     return str(user_id) == str(OWNER_ID)
@@ -497,7 +497,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# ⚔️ حلقة الهجوم
+# ⚔️ حلقة الهجوم (GiftSheep تعتمد على الوقت)
 # ============================================
 attack_status = {}
 
@@ -508,12 +508,22 @@ def attack_loop(user_id, chat_id):
     settings = get_mode_settings(user_id)
     start_number = settings["start_number"]
     current_number = start_number
-    proxy_index = 0
     attempts = 0
     successes = 0
+    
+    # إعدادات GiftSheep (تعتمد على الوقت)
+    last_time = settings.get("last_referral_time", 0)
+    daily_count = settings.get("daily_count", 0)
+    today = datetime.now().date().isoformat()
+    last_date = load_user_settings(user_id).get("giftsheep_last_date", "")
+    
+    if last_date != today:
+        daily_count = 0  # يوم جديد
+    
     attack_status[user_id_str] = {"running": True, "number": current_number}
 
     while attack_status[user_id_str]["running"]:
+        # ✅ التحقق من الاشتراكات
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if not sub_ok:
             if sub_type == "telegram":
@@ -527,6 +537,7 @@ def attack_loop(user_id, chat_id):
                 bot.send_message(chat_id, "❌ يرجى الاشتراك في جميع القنوات المطلوبة.")
             break
 
+        # ✅ التحقق من النقاط
         points = load_user_points(user_id)
         if points <= 0 and not is_owner(user_id):
             referral_link = get_referral_link(user_id)
@@ -535,43 +546,46 @@ def attack_loop(user_id, chat_id):
             keyboard.add(btn_link)
             bot.send_message(chat_id,
                 f"⚠️ **لقد نفدت نقاطك!**\n\n"
-                f"📢 شارك رابط الإحالة الخاص بك مع أصدقائك:\n"
+                f"📢 شارك رابط الإحالة الخاص بك:\n"
                 f"`{referral_link}`\n\n"
-                f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
+                f"💡 كل شخص ينضم من خلال هذا الرابط، ستحصل على 10 نقاط!",
                 reply_markup=keyboard,
                 parse_mode=None
             )
             break
 
-        proxies = load_proxies()
-        if not proxies:
-            bot.send_message(chat_id, "❌ لا يوجد بروكسيات! تم إيقاف الهجوم.")
-            break
+        # ✅ بالنسبة لـ GiftSheep: التحقق من الوقت والعدد اليومي
+        if mode == MODE_GIFTSHEEP:
+            current_time = time.time()
+            # الحد الأقصى 10 إحالات في اليوم
+            if daily_count >= 10:
+                bot.send_message(chat_id, f"✅ تم الوصول إلى الحد الأقصى اليومي (10 إحالات). سأستأنف غداً.")
+                attack_status[user_id_str]["running"] = False
+                break
+            
+            # الانتظار ساعة واحدة بين الإحالات
+            if last_time > 0 and (current_time - last_time) < 3600:
+                remaining = int(3600 - (current_time - last_time))
+                minutes = remaining // 60
+                seconds = remaining % 60
+                bot.send_message(chat_id, f"⏳ الانتظار {minutes} دقيقة و {seconds} ثانية قبل الإحالة التالية...")
+                time.sleep(remaining + 1)  # ننتظر حتى انتهاء الوقت
+                continue  # نعيد التحقق
 
+        # ✅ تنفيذ الإحالة
         used_data = load_used_numbers(user_id, mode)
         all_used = set(used_data["success"] + used_data["failed"] + used_data["already"])
         while str(current_number) in all_used:
             current_number += 1
         attack_status[user_id_str]["number"] = current_number
 
-        proxy = None
-        dead_proxies = load_dead_proxies()
-        for _ in range(len(proxies) * 2):
-            candidate = proxies[proxy_index % len(proxies)]
-            proxy_index += 1
-            if candidate not in dead_proxies:
-                proxy = candidate
-                break
-        if not proxy:
-            bot.send_message(chat_id, "⚠️ جميع البروكسيات تالفة! قم بإضافة بروكسيات جديدة.")
-            break
-
         target = str(current_number)
         current_number += 1
         attack_status[user_id_str]["number"] = current_number
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
-        result = process_referral(user_id, target, proxy)
+        
+        result = process_referral(user_id, target, None)  # ✅ بدون بروكسي
 
         if result.get("success"):
             successes += 1
@@ -583,21 +597,22 @@ def attack_loop(user_id, chat_id):
             user_data = sessions.get(str(user_id), {})
             first_name = user_data.get("first_name", "مستخدم")
             bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {first_name} -> {target} | +{gold} GP | {mode_name}")
+            
+            # ✅ تحديث الوقت والعدد اليومي لـ GiftSheep
+            if mode == MODE_GIFTSHEEP:
+                daily_count += 1
+                last_time = time.time()
+                # حفظ القيم في الإعدادات
+                data = load_user_settings(user_id)
+                data["giftsheep_last_referral_time"] = last_time
+                data["giftsheep_daily_count"] = daily_count
+                data["giftsheep_last_date"] = datetime.now().date().isoformat()
+                save_user_settings(user_id, data)
         else:
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
-            if reason in ["proxy_dead", "same_ip", "rate_limited"]:
-                bot.send_message(chat_id, f"⚠️ {arabic_reason}، ننتقل للتالي")
-                if proxy and proxy not in dead_proxies:
-                    dead_proxies.append(proxy)
-                    save_dead_proxies(dead_proxies)
-                current_number -= 1
-                continue
-            elif reason in ["already_used_success", "already_used_failed", "already_used_already"]:
-                bot.send_message(chat_id, f"ℹ️ {arabic_reason} (تم التخطي)")
-                continue
-            else:
-                bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
+            bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
+        
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
             used = load_used_numbers(user_id, mode)
@@ -718,6 +733,12 @@ def start_command(message):
     used = settings["used_data"]
     referral_count, referral_points = get_referral_stats(user_id)
 
+    # إحصائيات GiftSheep الإضافية
+    extra_stats = ""
+    if mode == MODE_GIFTSHEEP:
+        daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
+        extra_stats = f"\n📊 اليوم: {daily_count}/10 إحالة"
+
     bot.reply_to(message,
         f"✅ مرحباً {first_name}!\n\n"
         f"🔹 **الوضع الحالي:** {mode_name}\n"
@@ -729,7 +750,7 @@ def start_command(message):
         f"✅ نجاح: {len(used['success'])}\n"
         f"⚠️ محال: {len(used['already'])}\n"
         f"❌ فشل: {len(used['failed'])}\n"
-        f"🌐 بروكسيات: {len(proxies)}\n\n"
+        f"{extra_stats}\n"
         f"اضغط على الزر المناسب:",
         reply_markup=keyboard,
         parse_mode=None
@@ -782,12 +803,10 @@ def show_owner_menu(message):
     bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
 
 # ============================================
-# 🖱️ معالج الأزرار (مع إعلان global في البداية)
+# 🖱️ معالج الأزرار
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    global proxies  # ✅ يجب أن يكون هذا هو السطر الأول داخل الدالة
-
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -849,15 +868,13 @@ def handle_callback(call):
             return
         new_proxies = load_proxies()
         if not new_proxies:
-            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! جارٍ استخدام البروكسيات الاحتياطية.", show_alert=True)
-            proxies = BACKUP_PROXIES.copy()
-            bot.send_message(chat_id, f"✅ تم تحميل {len(proxies)} بروكسي احتياطي.")
+            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! سيتم استخدام الـ IP المحلي.", show_alert=True)
+            bot.send_message(chat_id, "✅ تم التبديل إلى الـ IP المحلي.")
             return
-        proxies = new_proxies
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(proxies)}", show_alert=True)
+        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(new_proxies)}", show_alert=True)
         return
 
-    # باقي الأزرار (اختصار)
+    # 6. باقي الأزرار
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -951,6 +968,10 @@ def handle_callback(call):
         current_num = attack_status.get(str(user_id), {}).get("number", start_num)
         points = load_user_points(user_id)
         used = settings["used_data"]
+        extra_stats = ""
+        if mode == MODE_GIFTSHEEP:
+            daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
+            extra_stats = f"\n📊 اليوم: {daily_count}/10 إحالة"
         bot.answer_callback_query(call.id, "📊 جاري عرض الحالة...")
         bot.send_message(chat_id,
             f"📊 **الحالة الحالية** ({mode_name})\n\n"
@@ -962,7 +983,7 @@ def handle_callback(call):
             f"✅ نجاح: {len(used['success'])}\n"
             f"⚠️ محال: {len(used['already'])}\n"
             f"❌ فشل: {len(used['failed'])}\n"
-            f"🌐 بروكسيات: {len(proxies)}"
+            f"{extra_stats}"
         )
         return
 
@@ -980,7 +1001,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # أوامر المالك الإضافية
+    # أوامر المالك الإضافية (اختصار)
     if call.data == "owner_add_channel":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
@@ -1067,10 +1088,10 @@ def handle_callback(call):
 
     if call.data == "owner_clear_dead":
         if not is_owner(user_id): return
+        dead_proxies = load_dead_proxies()
         if not dead_proxies:
             bot.answer_callback_query(call.id, "📭 لا يوجد بروكسيات تالفة!", show_alert=True)
             return
-        dead_proxies.clear()
         save_dead_proxies([])
         bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات التالفة!", show_alert=True)
         return
@@ -1168,7 +1189,7 @@ def handle_callback(call):
                 text += f"🟢 النشطين (مشتركين): {active}\n"
                 text += f"✅ GC نجاح: {total_success_gc}\n"
                 text += f"✅ GS نجاح: {total_success_gs}\n"
-                text += f"🌐 بروكسيات: {len(proxies)}\n"
+                text += f"🌐 بروكسيات: {len(load_proxies())}\n"
                 bot.edit_message_text(text, chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
             except Exception as e:
                 bot.edit_message_text(f"⚠️ خطأ: {str(e)[:200]}", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
@@ -1244,7 +1265,6 @@ def broadcast_step(message):
     bot.reply_to(message, f"✅ تم الإرسال إلى {success_count} من {len(sessions)} مستخدم.")
 
 def add_proxy_step(message):
-    global proxies
     if not is_owner(message.from_user.id):
         return
     proxy = message.text.strip()
@@ -1253,11 +1273,9 @@ def add_proxy_step(message):
     proxies = load_proxies()
     proxies.append(proxy)
     save_proxies(proxies)
-    proxies = load_proxies()
-    bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(proxies)}")
+    bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(load_proxies())}")
 
 def process_bulk_proxies(message):
-    global proxies
     if not is_owner(message.from_user.id):
         return
     if message.document:
@@ -1295,10 +1313,9 @@ def process_bulk_proxies(message):
             current_set.add(p)
             added += 1
     save_proxies(current)
-    proxies = load_proxies()
     bot.reply_to(message,
         f"✅ تم إضافة {added} بروكسي جديد.\n"
-        f"🌐 العدد الإجمالي: {len(proxies)} بروكسي."
+        f"🌐 العدد الإجمالي: {len(load_proxies())} بروكسي."
     )
 
 def check_proxies(message):
@@ -1335,8 +1352,6 @@ def check_proxies(message):
         time.sleep(0.5)
     save_proxies(working)
     save_dead_proxies(dead)
-    global proxies
-    proxies = load_proxies()
     bot.reply_to(message,
         f"✅ اكتمل الفحص.\n"
         f"🟢 صالح: {len(working)}\n"
@@ -1400,7 +1415,7 @@ def run_flask():
 # ============================================
 if __name__ == "__main__":
     print("="*60)
-    print("🤖 بوت الإحالات المتكامل (GiftCode + GiftSheep)")
+    print("🤖 بوت الإحالات المتكامل (GiftCode + GiftSheep - بالوقت)")
     print(f"👤 المالك: {OWNER_ID}")
     print(f"📢 قناة التلجرام الأساسية: @{CHANNEL_TG}")
     print(f"🎬 قناة اليوتيوب: {CHANNEL_YT}")
