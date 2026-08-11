@@ -13,7 +13,7 @@ from flask import Flask, jsonify
 
 # ============================================
 # 🔐 إعدادات البوت الأساسية
-# ===========================================
+# ============================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
 OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
@@ -180,20 +180,15 @@ def set_mode_setting(user_id, key, value):
     save_user_settings(user_id, data)
 
 def update_giftsheep_stats(user_id, success=True):
-    """تحديث إحصائيات GiftSheep (الوقت والعدد اليومي)"""
     data = load_user_settings(user_id)
     today = datetime.now().date().isoformat()
     last_date = data.get("giftsheep_last_date", "")
-    
     if last_date != today:
-        # يوم جديد، إعادة تعيين العدد اليومي
         data["giftsheep_daily_count"] = 0
         data["giftsheep_last_date"] = today
-    
     if success:
         data["giftsheep_daily_count"] = data.get("giftsheep_daily_count", 0) + 1
         data["giftsheep_last_referral_time"] = time.time()
-    
     save_user_settings(user_id, data)
 
 # ============================================
@@ -264,7 +259,6 @@ def create_giftsheep_account(email, password):
     url = "https://identitytoolkit.googleapis.com/v1/accounts:signUp"
     params = {"key": GIFTSHEEP_FIREBASE_API_KEY}
     payload = {"email": email, "password": password, "returnSecureToken": True}
-    
     try:
         resp = requests.post(url, params=params, json=payload, timeout=30)
         data = resp.json()
@@ -283,7 +277,6 @@ def send_giftsheep_referral(access_token, ref_code):
         'User-Agent': 'okhttp/3.12.13'
     }
     payload = {"data": {"code": ref_code}}
-    
     try:
         resp = requests.post(GIFTSHEEP_REFERRAL_URL, json=payload, headers=headers, timeout=30)
         try:
@@ -330,7 +323,6 @@ def process_referral(user_id, target, proxy):
     if result.get("success"):
         used_data["success"].append(str(target))
         save_used_numbers(user_id, used_data, mode)
-        # تحديث إحصائيات GiftSheep (الوقت والعدد اليومي)
         if mode == MODE_GIFTSHEEP:
             update_giftsheep_stats(user_id, success=True)
     elif result.get("reason") == "already_referred":
@@ -453,6 +445,7 @@ def is_subscribed_telegram(user_id):
         return False
 
 def is_subscribed_youtube(user_id):
+    # المالك دائماً مشترك
     if is_owner(user_id):
         return True
     data = load_user_settings(user_id)
@@ -510,26 +503,24 @@ def attack_loop(user_id, chat_id):
     current_number = start_number
     attempts = 0
     successes = 0
-    
-    # إعدادات GiftSheep (تعتمد على الوقت)
+
     last_time = settings.get("last_referral_time", 0)
     daily_count = settings.get("daily_count", 0)
     today = datetime.now().date().isoformat()
     last_date = load_user_settings(user_id).get("giftsheep_last_date", "")
-    
+
     if last_date != today:
-        daily_count = 0  # يوم جديد
-    
+        daily_count = 0
+
     attack_status[user_id_str] = {"running": True, "number": current_number}
 
     while attack_status[user_id_str]["running"]:
-        # ✅ التحقق من الاشتراكات
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if not sub_ok:
             if sub_type == "telegram":
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة التلجرام الأساسية: @{CHANNEL_TG}")
             elif sub_type == "youtube":
-                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة اليوتيوب: {CHANNEL_YT}")
+                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة اليوتيوب: {CHANNEL_YT}\nثم اضغط على زر التأكيد في القائمة الرئيسية.")
             elif sub_type and sub_type.startswith("extra_"):
                 channel = sub_type.replace("extra_", "")
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في القناة الإضافية: @{channel}")
@@ -537,7 +528,6 @@ def attack_loop(user_id, chat_id):
                 bot.send_message(chat_id, "❌ يرجى الاشتراك في جميع القنوات المطلوبة.")
             break
 
-        # ✅ التحقق من النقاط
         points = load_user_points(user_id)
         if points <= 0 and not is_owner(user_id):
             referral_link = get_referral_link(user_id)
@@ -554,25 +544,21 @@ def attack_loop(user_id, chat_id):
             )
             break
 
-        # ✅ بالنسبة لـ GiftSheep: التحقق من الوقت والعدد اليومي
         if mode == MODE_GIFTSHEEP:
             current_time = time.time()
-            # الحد الأقصى 10 إحالات في اليوم
             if daily_count >= 10:
                 bot.send_message(chat_id, f"✅ تم الوصول إلى الحد الأقصى اليومي (10 إحالات). سأستأنف غداً.")
                 attack_status[user_id_str]["running"] = False
                 break
-            
-            # الانتظار ساعة واحدة بين الإحالات
+
             if last_time > 0 and (current_time - last_time) < 3600:
                 remaining = int(3600 - (current_time - last_time))
                 minutes = remaining // 60
                 seconds = remaining % 60
                 bot.send_message(chat_id, f"⏳ الانتظار {minutes} دقيقة و {seconds} ثانية قبل الإحالة التالية...")
-                time.sleep(remaining + 1)  # ننتظر حتى انتهاء الوقت
-                continue  # نعيد التحقق
+                time.sleep(remaining + 1)
+                continue
 
-        # ✅ تنفيذ الإحالة
         used_data = load_used_numbers(user_id, mode)
         all_used = set(used_data["success"] + used_data["failed"] + used_data["already"])
         while str(current_number) in all_used:
@@ -584,8 +570,8 @@ def attack_loop(user_id, chat_id):
         attack_status[user_id_str]["number"] = current_number
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
-        
-        result = process_referral(user_id, target, None)  # ✅ بدون بروكسي
+
+        result = process_referral(user_id, target, None)  # بدون بروكسي
 
         if result.get("success"):
             successes += 1
@@ -597,12 +583,10 @@ def attack_loop(user_id, chat_id):
             user_data = sessions.get(str(user_id), {})
             first_name = user_data.get("first_name", "مستخدم")
             bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {first_name} -> {target} | +{gold} GP | {mode_name}")
-            
-            # ✅ تحديث الوقت والعدد اليومي لـ GiftSheep
+
             if mode == MODE_GIFTSHEEP:
                 daily_count += 1
                 last_time = time.time()
-                # حفظ القيم في الإعدادات
                 data = load_user_settings(user_id)
                 data["giftsheep_last_referral_time"] = last_time
                 data["giftsheep_daily_count"] = daily_count
@@ -612,7 +596,7 @@ def attack_loop(user_id, chat_id):
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
             bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
-        
+
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
             used = load_used_numbers(user_id, mode)
@@ -733,7 +717,6 @@ def start_command(message):
     used = settings["used_data"]
     referral_count, referral_points = get_referral_stats(user_id)
 
-    # إحصائيات GiftSheep الإضافية
     extra_stats = ""
     if mode == MODE_GIFTSHEEP:
         daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
