@@ -13,7 +13,7 @@ from flask import Flask, jsonify
 
 # ============================================
 # 🔐 إعدادات البوت الأساسية
-# ============================================
+# ===========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
 OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
