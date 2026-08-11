@@ -437,7 +437,7 @@ def fix_all_referral_points():
 # 🤖 دوال البوت الأساسية
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-proxies = load_proxies()
+proxies = load_proxies()  # متغير عام
 dead_proxies = load_dead_proxies()
 
 def is_owner(user_id):
@@ -786,6 +786,7 @@ def show_owner_menu(message):
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    global proxies  # ✅ إعلان global في بداية الدالة
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -839,6 +840,20 @@ def handle_callback(call):
             total_success += len(used["success"])
         text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
         bot.reply_to(call.message, text, parse_mode=None)
+        return
+
+    # 5. تحديث البروكسيات (مع global proxies في الأعلى)
+    if call.data == "owner_refresh":
+        if not is_owner(user_id):
+            return
+        new_proxies = load_proxies()
+        if not new_proxies:
+            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! جارٍ استخدام البروكسيات الاحتياطية.", show_alert=True)
+            proxies = BACKUP_PROXIES.copy()
+            bot.send_message(chat_id, f"✅ تم تحميل {len(proxies)} بروكسي احتياطي.")
+            return
+        proxies = new_proxies
+        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(proxies)}", show_alert=True)
         return
 
     # باقي الأزرار (مكررة من الكود الأصلي - اختصار للطول)
@@ -1031,19 +1046,7 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, process_bulk_proxies)
         return
 
-    if call.data == "owner_refresh":
-        if not is_owner(user_id): return
-        new_proxies = load_proxies()
-        if not new_proxies:
-            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! جارٍ استخدام البروكسيات الاحتياطية.", show_alert=True)
-            global proxies
-            proxies = BACKUP_PROXIES.copy()
-            bot.send_message(chat_id, f"✅ تم تحميل {len(proxies)} بروكسي احتياطي.")
-            return
-        proxies = new_proxies
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(proxies)}", show_alert=True)
-        return
-
+    # owner_list, owner_check, owner_clear_dead, owner_referral_stats, owner_fix_points, owner_reset_points, owner_stats, owner_active_users, owner_clear_sessions
     if call.data == "owner_list":
         if not is_owner(user_id): return
         proxies = load_proxies()
@@ -1241,6 +1244,7 @@ def broadcast_step(message):
     bot.reply_to(message, f"✅ تم الإرسال إلى {success_count} من {len(sessions)} مستخدم.")
 
 def add_proxy_step(message):
+    global proxies  # ✅ إعلان global
     if not is_owner(message.from_user.id):
         return
     proxy = message.text.strip()
@@ -1249,9 +1253,12 @@ def add_proxy_step(message):
     proxies = load_proxies()
     proxies.append(proxy)
     save_proxies(proxies)
+    # تحديث المتغير العام بعد الحفظ
+    proxies = load_proxies()
     bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(proxies)}")
 
 def process_bulk_proxies(message):
+    global proxies  # ✅ إعلان global
     if not is_owner(message.from_user.id):
         return
     if message.document:
@@ -1289,9 +1296,10 @@ def process_bulk_proxies(message):
             current_set.add(p)
             added += 1
     save_proxies(current)
+    proxies = load_proxies()  # تحديث المتغير العام
     bot.reply_to(message,
         f"✅ تم إضافة {added} بروكسي جديد.\n"
-        f"🌐 العدد الإجمالي: {len(current)} بروكسي."
+        f"🌐 العدد الإجمالي: {len(proxies)} بروكسي."
     )
 
 def check_proxies(message):
@@ -1328,6 +1336,9 @@ def check_proxies(message):
         time.sleep(0.5)
     save_proxies(working)
     save_dead_proxies(dead)
+    # تحديث المتغير العام
+    global proxies
+    proxies = load_proxies()
     bot.reply_to(message,
         f"✅ اكتمل الفحص.\n"
         f"🟢 صالح: {len(working)}\n"
