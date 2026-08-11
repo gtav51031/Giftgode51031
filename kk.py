@@ -15,7 +15,7 @@ from flask import Flask, jsonify
 # 🔐 إعدادات البوت الأساسية
 # ============================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
-OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك
+OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك (استخدم /get_my_id)
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
 CHANNEL_YT = os.environ.get("CHANNEL_YT", "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Rame124673_bot")
@@ -28,11 +28,11 @@ YOUTUBE_VERIFY_DAYS = 7
 EXTRA_CHANNELS_FILE = "extra_channels.json"
 
 # ============================================
-# إعدادات GiftSheep (مثل الكود القديم)
+# إعدادات GiftSheep
 # ============================================
 GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
-GIFTSHEEP_TARGET_CODE = "W27PO5"  # كود الإحالة القديم
+GIFTSHEEP_DEFAULT_CODE = "W27PO5"  # الكود الافتراضي (إذا لم يحدد المستخدم غيره)
 
 # ============================================
 # الوضعيات
@@ -141,7 +141,7 @@ def save_user_settings(user_id, data):
         json.dump(data, f, indent=2)
 
 # ============================================
-# دوال الوضع والإعدادات
+# دوال الوضع والإعدادات (المُصححة)
 # ============================================
 def get_user_mode(user_id):
     data = load_user_settings(user_id)
@@ -161,10 +161,11 @@ def get_mode_settings(user_id):
             "start_number": data.get("giftcode_start_number", 4084879),
             "used_data": load_used_numbers(user_id, MODE_GIFTCODE)
         }
-    else:
+    else:  # MODE_GIFTSHEEP
+        # ✅ التصحيح: نقرأ كود الإحالة من إعدادات المستخدم
         return {
-            "ref_code": GIFTSHEEP_TARGET_CODE,  # ✅ كود الإحالة الثابت
-            "start_number": 1,  # ✅ غير مستخدم في GiftSheep (نعتمد على الوقت)
+            "ref_code": data.get("giftsheep_ref_code", GIFTSHEEP_DEFAULT_CODE),
+            "start_number": 1,
             "used_data": load_used_numbers(user_id, MODE_GIFTSHEEP),
             "last_referral_time": data.get("giftsheep_last_referral_time", 0),
             "daily_count": data.get("giftsheep_daily_count", 0)
@@ -192,7 +193,7 @@ def update_giftsheep_stats(user_id, success=True):
     save_user_settings(user_id, data)
 
 # ============================================
-# 📦 دوال البروكسيات (غير مستخدمة في GiftSheep)
+# 📦 دوال البروكسيات (غير مستخدمة حالياً)
 # ============================================
 def load_proxies():
     if os.path.exists(PROXIES_FILE):
@@ -253,7 +254,7 @@ def send_giftcode_referral(referral_code, user_id, proxy):
         return {"success": False, "reason": "proxy_dead", "error": str(e)}
 
 # ============================================
-# 🐑 دوال الإحالات (GiftSheep) - مثل الكود القديم تماماً
+# 🐑 دوال الإحالات (GiftSheep)
 # ============================================
 def create_giftsheep_account(email, password):
     url = "https://identitytoolkit.googleapis.com/v1/accounts:signUp"
@@ -571,7 +572,7 @@ def attack_loop(user_id, chat_id):
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
 
-        result = process_referral(user_id, target, None)  # بدون بروكسي
+        result = process_referral(user_id, target, None)
 
         if result.get("success"):
             successes += 1
@@ -984,7 +985,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # أوامر المالك الإضافية (اختصار)
+    # أوامر المالك الإضافية
     if call.data == "owner_add_channel":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
@@ -1398,7 +1399,7 @@ def run_flask():
 # ============================================
 if __name__ == "__main__":
     print("="*60)
-    print("🤖 بوت الإحالات المتكامل (GiftCode + GiftSheep - بالوقت)")
+    print("🤖 بوت الإحالات المتكامل (GiftCode + GiftSheep)")
     print(f"👤 المالك: {OWNER_ID}")
     print(f"📢 قناة التلجرام الأساسية: @{CHANNEL_TG}")
     print(f"🎬 قناة اليوتيوب: {CHANNEL_YT}")
