@@ -15,7 +15,7 @@ from flask import Flask, jsonify
 # 🔐 إعدادات البوت الأساسية
 # ============================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
-OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))  # ⚠️ غيّر إلى معرفك (استخدم /get_my_id)
+OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))
 CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
 CHANNEL_YT = os.environ.get("CHANNEL_YT", "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Rame124673_bot")
@@ -32,7 +32,8 @@ EXTRA_CHANNELS_FILE = "extra_channels.json"
 # ============================================
 GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
-GIFTSHEEP_DEFAULT_CODE = "W27PO5"  # الكود الافتراضي (إذا لم يحدد المستخدم غيره)
+GIFTSHEEP_DEFAULT_CODE = "W27PO5"
+GIFTSHEEP_DAILY_LIMIT = 25  # ✅ تم التعديل: 25 محاولة يومياً
 
 # ============================================
 # الوضعيات
@@ -141,7 +142,7 @@ def save_user_settings(user_id, data):
         json.dump(data, f, indent=2)
 
 # ============================================
-# دوال الوضع والإعدادات (المُصححة)
+# دوال الوضع والإعدادات
 # ============================================
 def get_user_mode(user_id):
     data = load_user_settings(user_id)
@@ -161,8 +162,7 @@ def get_mode_settings(user_id):
             "start_number": data.get("giftcode_start_number", 4084879),
             "used_data": load_used_numbers(user_id, MODE_GIFTCODE)
         }
-    else:  # MODE_GIFTSHEEP
-        # ✅ التصحيح: نقرأ كود الإحالة من إعدادات المستخدم
+    else:
         return {
             "ref_code": data.get("giftsheep_ref_code", GIFTSHEEP_DEFAULT_CODE),
             "start_number": 1,
@@ -193,7 +193,7 @@ def update_giftsheep_stats(user_id, success=True):
     save_user_settings(user_id, data)
 
 # ============================================
-# 📦 دوال البروكسيات (غير مستخدمة حالياً)
+# 📦 دوال البروكسيات
 # ============================================
 def load_proxies():
     if os.path.exists(PROXIES_FILE):
@@ -307,7 +307,7 @@ def process_referral(user_id, target, proxy):
 
     if mode == MODE_GIFTCODE:
         result = send_giftcode_referral(ref_code, target, proxy)
-    else:  # GiftSheep
+    else:
         email = f"test_{uuid.uuid4().hex[:8]}@mail.tm"
         password = f"Test@{uuid.uuid4().hex[:6]}"
         auth_data = create_giftsheep_account(email, password)
@@ -429,6 +429,28 @@ def fix_all_referral_points():
     return fixed_count
 
 # ============================================
+# 🎬 إدارة ظهور رسالة اليوتيوب (مرة واحدة)
+# ============================================
+def has_youtube_prompt_shown(user_id):
+    data = load_user_settings(user_id)
+    return data.get("youtube_prompt_shown", False)
+
+def set_youtube_prompt_shown(user_id):
+    data = load_user_settings(user_id)
+    data["youtube_prompt_shown"] = True
+    save_user_settings(user_id, data)
+
+# ============================================
+# 👑 دوال المالك: التحكم في نقاط المستخدمين
+# ============================================
+def adjust_user_points(user_id, amount):
+    """إضافة أو خصم نقاط من مستخدم"""
+    current = load_user_points(user_id)
+    new_points = max(0, current + amount)
+    save_user_points(user_id, new_points)
+    return current, new_points
+
+# ============================================
 # 🤖 دوال البوت الأساسية
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
@@ -446,7 +468,6 @@ def is_subscribed_telegram(user_id):
         return False
 
 def is_subscribed_youtube(user_id):
-    # المالك دائماً مشترك
     if is_owner(user_id):
         return True
     data = load_user_settings(user_id)
@@ -467,8 +488,6 @@ def check_all_subscriptions(user_id):
         return True, None
     if not is_subscribed_telegram(user_id):
         return False, "telegram"
-    if not is_subscribed_youtube(user_id):
-        return False, "youtube"
     extra_ok, channel = is_subscribed_extra(user_id)
     if not extra_ok:
         return False, f"extra_{channel}"
@@ -512,6 +531,10 @@ def attack_loop(user_id, chat_id):
 
     if last_date != today:
         daily_count = 0
+        data = load_user_settings(user_id)
+        data["giftsheep_daily_count"] = 0
+        data["giftsheep_last_date"] = today
+        save_user_settings(user_id, data)
 
     attack_status[user_id_str] = {"running": True, "number": current_number}
 
@@ -520,8 +543,6 @@ def attack_loop(user_id, chat_id):
         if not sub_ok:
             if sub_type == "telegram":
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة التلجرام الأساسية: @{CHANNEL_TG}")
-            elif sub_type == "youtube":
-                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة اليوتيوب: {CHANNEL_YT}\nثم اضغط على زر التأكيد في القائمة الرئيسية.")
             elif sub_type and sub_type.startswith("extra_"):
                 channel = sub_type.replace("extra_", "")
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في القناة الإضافية: @{channel}")
@@ -547,8 +568,16 @@ def attack_loop(user_id, chat_id):
 
         if mode == MODE_GIFTSHEEP:
             current_time = time.time()
-            if daily_count >= 10:
-                bot.send_message(chat_id, f"✅ تم الوصول إلى الحد الأقصى اليومي (10 إحالات). سأستأنف غداً.")
+            
+            # ✅ تم التعديل: الحد الأقصى 25 محاولة يومياً
+            if daily_count >= GIFTSHEEP_DAILY_LIMIT:
+                # ✅ رسالة جديدة: التذكير بأن الوقت متاح غداً
+                bot.send_message(chat_id, 
+                    f"✅ **تم الوصول إلى الحد الأقصى اليومي ({GIFTSHEEP_DAILY_LIMIT} إحالات)**\n\n"
+                    f"🕒 **سيتم إعادة تعيين العداد عند منتصف الليل.**\n"
+                    f"⏰ **سيكون الوقت متاحاً غداً.**\n\n"
+                    f"💡 يمكنك متابعة الهجوم يدوياً بعد منتصف الليل."
+                )
                 attack_status[user_id_str]["running"] = False
                 break
 
@@ -556,8 +585,20 @@ def attack_loop(user_id, chat_id):
                 remaining = int(3600 - (current_time - last_time))
                 minutes = remaining // 60
                 seconds = remaining % 60
-                bot.send_message(chat_id, f"⏳ الانتظار {minutes} دقيقة و {seconds} ثانية قبل الإحالة التالية...")
-                time.sleep(remaining + 1)
+                bot.send_message(chat_id, 
+                    f"⏳ **الانتظار قبل الإحالة التالية:**\n"
+                    f"⏱️ {minutes} دقيقة و {seconds} ثانية\n\n"
+                    f"📊 **تقدم اليوم:** {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة\n\n"
+                    f"💡 سيتم إعلامك عندما يصبح الوقت متاحاً."
+                )
+                # ننتظر حتى انتهاء الوقت مع إرسال تذكير عند انتهائه
+                time.sleep(remaining)
+                # ✅ إرسال تذكير بأن الوقت أصبح متاحاً
+                bot.send_message(chat_id, 
+                    f"✅ **الوقت متاح الآن!**\n\n"
+                    f"🔄 يمكنك متابعة الإحالات.\n"
+                    f"📊 **تقدم اليوم:** {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
+                )
                 continue
 
         used_data = load_used_numbers(user_id, mode)
@@ -662,18 +703,13 @@ def start_command(message):
         if sub_type == "telegram":
             btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
             keyboard.add(btn_tg)
-        elif sub_type == "youtube":
-            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
-            btn_verify = InlineKeyboardButton("✅ لقد اشتركت (تأكيد)", callback_data="verify_youtube")
-            keyboard.add(btn_yt, btn_verify)
         elif sub_type and sub_type.startswith("extra_"):
             channel = sub_type.replace("extra_", "")
             btn_extra = InlineKeyboardButton(f"📢 اشترك في @{channel}", url=f"https://t.me/{channel}")
             keyboard.add(btn_extra)
         else:
             btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
-            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
-            keyboard.add(btn_tg, btn_yt)
+            keyboard.add(btn_tg)
             extra_channels = load_extra_channels()
             for ch in extra_channels:
                 btn_extra = InlineKeyboardButton(f"📢 اشترك في @{ch}", url=f"https://t.me/{ch}")
@@ -689,6 +725,23 @@ def start_command(message):
             reply_markup=keyboard,
             parse_mode=None
         )
+        return
+
+    # عرض رسالة اليوتيوب (مرة واحدة، اختيارية)
+    if not has_youtube_prompt_shown(user_id):
+        keyboard_yt = InlineKeyboardMarkup()
+        btn_yt = InlineKeyboardButton("🎬 اشترك في اليوتيوب", url=CHANNEL_YT)
+        btn_verify = InlineKeyboardButton("✅ لقد اشتركت (تأكيد)", callback_data="verify_youtube_optional")
+        btn_skip = InlineKeyboardButton("⏭️ تخطي", callback_data="skip_youtube")
+        keyboard_yt.add(btn_yt, btn_verify, btn_skip)
+        bot.send_message(message.chat.id,
+            f"🎬 **قناة اليوتيوب**\n"
+            f"يمكنك دعم البوت بالاشتراك في قناتي على يوتيوب (اختياري).\n"
+            f"اضغط على الزر المناسب:",
+            reply_markup=keyboard_yt,
+            parse_mode=None
+        )
+        set_youtube_prompt_shown(user_id)
         return
 
     # القائمة الرئيسية
@@ -721,7 +774,7 @@ def start_command(message):
     extra_stats = ""
     if mode == MODE_GIFTSHEEP:
         daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
-        extra_stats = f"\n📊 اليوم: {daily_count}/10 إحالة"
+        extra_stats = f"\n📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
 
     bot.reply_to(message,
         f"✅ مرحباً {first_name}!\n\n"
@@ -769,10 +822,12 @@ def show_owner_menu(message):
     btn_list_channels = InlineKeyboardButton("📋 عرض القنوات الإجبارية", callback_data="owner_list_channels")
     btn_remove_channel = InlineKeyboardButton("🗑️ حذف قناة إجبارية", callback_data="owner_remove_channel")
     btn_broadcast = InlineKeyboardButton("📢 بث رسالة للجميع", callback_data="owner_broadcast")
-    btn_active = InlineKeyboardButton("👥 المستخدمون النشطون", callback_data="owner_active_users")
+    btn_active_gc = InlineKeyboardButton("👥 نشطاء GiftCode", callback_data="owner_active_giftcode")
+    btn_active_gs = InlineKeyboardButton("🐑 نشطاء GiftSheep", callback_data="owner_active_giftsheep")
     btn_referral_stats = InlineKeyboardButton("📊 إحصائيات الإحالات الداخلية", callback_data="owner_referral_stats")
     btn_reset_points = InlineKeyboardButton("🔄 إعادة تعيين النقاط للجميع", callback_data="owner_reset_points")
     btn_fix_points = InlineKeyboardButton("🔧 تصحيح نقاط الإحالات", callback_data="owner_fix_points")
+    btn_adjust_points = InlineKeyboardButton("⚙️ تعديل نقاط مستخدم", callback_data="owner_adjust_points")
 
     keyboard.add(btn_add_proxy, btn_bulk_proxy)
     keyboard.add(btn_refresh, btn_list)
@@ -781,8 +836,10 @@ def show_owner_menu(message):
     keyboard.add(btn_clear_sessions)
     keyboard.add(btn_add_channel, btn_list_channels)
     keyboard.add(btn_remove_channel, btn_broadcast)
-    keyboard.add(btn_active, btn_referral_stats)
+    keyboard.add(btn_active_gc, btn_active_gs)
+    keyboard.add(btn_referral_stats)
     keyboard.add(btn_reset_points, btn_fix_points)
+    keyboard.add(btn_adjust_points)
 
     bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
 
@@ -793,7 +850,6 @@ def show_owner_menu(message):
 def handle_callback(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
-
     update_user_activity(user_id)
 
     # 1. تأكيد الإحالة
@@ -811,7 +867,20 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 2. تبديل الوضع
+    # 2. تأكيد يوتيوب اختياري
+    if call.data == "verify_youtube_optional":
+        set_user_setting(user_id, YOUTUBE_VERIFY_KEY, True)
+        set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
+        bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك! شكراً لك.", show_alert=True)
+        start_command(call.message)
+        return
+
+    if call.data == "skip_youtube":
+        bot.answer_callback_query(call.id, "⏭️ تم تخطي اليوتيوب.", show_alert=True)
+        start_command(call.message)
+        return
+
+    # 3. تبديل الوضع
     if call.data == "switch_mode":
         current_mode = get_user_mode(user_id)
         new_mode = MODE_GIFTSHEEP if current_mode == MODE_GIFTCODE else MODE_GIFTCODE
@@ -821,7 +890,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 3. أوامر المالك
+    # 4. أوامر المالك
     if call.data == "owner_commands":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -830,35 +899,74 @@ def handle_callback(call):
         show_owner_menu(call.message)
         return
 
-    # 4. إحصائيات GiftSheep
-    if call.data == "owner_giftsheep_stats":
+    # 5. نشطاء GiftCode
+    if call.data == "owner_active_giftcode":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
             return
-        sessions = load_user_sessions()
-        text = "📊 **إحصائيات GiftSheep**\n\n"
-        total_success = 0
-        for user_id_str in sessions.keys():
-            uid = int(user_id_str)
-            used = load_used_numbers(uid, MODE_GIFTSHEEP)
-            total_success += len(used["success"])
-        text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
+        active_list = get_active_users()
+        if not active_list:
+            bot.reply_to(call.message, "👥 لا يوجد مستخدمون نشطون حالياً في GiftCode.")
+            return
+        text = f"👥 **المستخدمون النشطون في GiftCode** ({len(active_list)}):\n\n"
+        for uid, last_time in active_list:
+            mode = get_user_mode(uid)
+            if mode == MODE_GIFTCODE:
+                sessions = load_user_sessions()
+                user_data = sessions.get(str(uid), {})
+                name = user_data.get("first_name", "مستخدم")
+                username = user_data.get("username", "")
+                time_ago = format_time_ago(last_time)
+                if username:
+                    text += f"• {name} (@{username}) - نشط {time_ago}\n"
+                else:
+                    text += f"• {name} - نشط {time_ago}\n"
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 5. تحديث البروكسيات
-    if call.data == "owner_refresh":
+    # 6. نشطاء GiftSheep ✅ ميزة جديدة
+    if call.data == "owner_active_giftsheep":
         if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
             return
-        new_proxies = load_proxies()
-        if not new_proxies:
-            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! سيتم استخدام الـ IP المحلي.", show_alert=True)
-            bot.send_message(chat_id, "✅ تم التبديل إلى الـ IP المحلي.")
+        active_list = get_active_users()
+        if not active_list:
+            bot.reply_to(call.message, "🐑 لا يوجد مستخدمون نشطون حالياً في GiftSheep.")
             return
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(new_proxies)}", show_alert=True)
+        text = f"🐑 **المستخدمون النشطون في GiftSheep** ({len(active_list)}):\n\n"
+        for uid, last_time in active_list:
+            mode = get_user_mode(uid)
+            if mode == MODE_GIFTSHEEP:
+                sessions = load_user_sessions()
+                user_data = sessions.get(str(uid), {})
+                name = user_data.get("first_name", "مستخدم")
+                username = user_data.get("username", "")
+                # عرض إحصائيات اليوم
+                daily_count = load_user_settings(uid).get("giftsheep_daily_count", 0)
+                time_ago = format_time_ago(last_time)
+                if username:
+                    text += f"• {name} (@{username}) - نشط {time_ago} | 📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT}\n"
+                else:
+                    text += f"• {name} - نشط {time_ago} | 📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT}\n"
+        bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 6. باقي الأزرار
+    # 7. تعديل نقاط مستخدم ✅ ميزة جديدة
+    if call.data == "owner_adjust_points":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+        msg = bot.send_message(chat_id, 
+            "⚙️ **تعديل نقاط مستخدم**\n\n"
+            "أرسل معرف المستخدم (ID) أولاً، ثم في الرسالة التالية أرسل عدد النقاط المطلوب إضافتها (استخدم علامة - للخصم).\n\n"
+            "مثال:\n"
+            "`123456789` (المستخدم)\n"
+            "ثم أرسل `10` لإضافة 10 نقاط، أو `-5` لخصم 5 نقاط."
+        )
+        bot.register_next_step_handler(msg, get_adjust_user_id)
+        return
+
+    # 8. باقي الأزرار (اختصار)
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -867,23 +975,11 @@ def handle_callback(call):
         else:
             if sub_type == "telegram":
                 bot.answer_callback_query(call.id, f"❌ اشترك في قناة التلجرام الأساسية: @{CHANNEL_TG}", show_alert=True)
-            elif sub_type == "youtube":
-                bot.answer_callback_query(call.id, "❌ اشترك في يوتيوب ثم اضغط على زر التأكيد!", show_alert=True)
             elif sub_type and sub_type.startswith("extra_"):
                 channel = sub_type.replace("extra_", "")
                 bot.answer_callback_query(call.id, f"❌ اشترك في القناة الإضافية: @{channel}", show_alert=True)
             else:
                 bot.answer_callback_query(call.id, "❌ اشترك في جميع القنوات المطلوبة!", show_alert=True)
-        return
-
-    if call.data == "verify_youtube":
-        if is_subscribed_telegram(user_id):
-            set_user_setting(user_id, YOUTUBE_VERIFY_KEY, True)
-            set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
-            bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك في يوتيوب!", show_alert=True)
-            start_command(call.message)
-        else:
-            bot.answer_callback_query(call.id, "❌ اشترك في قناة التلجرام أولاً!", show_alert=True)
         return
 
     if call.data == "set_referral":
@@ -955,7 +1051,7 @@ def handle_callback(call):
         extra_stats = ""
         if mode == MODE_GIFTSHEEP:
             daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
-            extra_stats = f"\n📊 اليوم: {daily_count}/10 إحالة"
+            extra_stats = f"\n📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
         bot.answer_callback_query(call.id, "📊 جاري عرض الحالة...")
         bot.send_message(chat_id,
             f"📊 **الحالة الحالية** ({mode_name})\n\n"
@@ -985,7 +1081,9 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # أوامر المالك الإضافية
+    # ============================================
+    # الأوامر الإضافية للمالك
+    # ============================================
     if call.data == "owner_add_channel":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
@@ -1180,30 +1278,33 @@ def handle_callback(call):
         threading.Thread(target=send_stats, daemon=True).start()
         return
 
-    if call.data == "owner_active_users":
-        if not is_owner(user_id): return
-        active_list = get_active_users()
-        if not active_list:
-            bot.reply_to(call.message, "👥 لا يوجد مستخدمون نشطون حالياً.")
-            return
-        text = f"👥 **المستخدمون النشطون** ({len(active_list)}):\n\n"
-        for uid, last_time in active_list:
-            sessions = load_user_sessions()
-            user_data = sessions.get(str(uid), {})
-            name = user_data.get("first_name", "مستخدم")
-            username = user_data.get("username", "")
-            time_ago = format_time_ago(last_time)
-            if username:
-                text += f"• {name} (@{username}) - نشط {time_ago}\n"
-            else:
-                text += f"• {name} - نشط {time_ago}\n"
-        bot.reply_to(call.message, text, parse_mode=None)
-        return
-
     if call.data == "owner_clear_sessions":
         if not is_owner(user_id): return
         save_user_sessions({})
         bot.answer_callback_query(call.id, "🧹 تم مسح جميع الجلسات!", show_alert=True)
+        return
+
+    if call.data == "owner_giftsheep_stats":
+        if not is_owner(user_id): return
+        sessions = load_user_sessions()
+        text = "📊 **إحصائيات GiftSheep**\n\n"
+        total_success = 0
+        for user_id_str in sessions.keys():
+            uid = int(user_id_str)
+            used = load_used_numbers(uid, MODE_GIFTSHEEP)
+            total_success += len(used["success"])
+        text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
+        bot.reply_to(call.message, text, parse_mode=None)
+        return
+
+    if call.data == "owner_refresh":
+        if not is_owner(user_id): return
+        new_proxies = load_proxies()
+        if not new_proxies:
+            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! سيتم استخدام الـ IP المحلي.", show_alert=True)
+            bot.send_message(chat_id, "✅ تم التبديل إلى الـ IP المحلي.")
+            return
+        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(new_proxies)}", show_alert=True)
         return
 
     bot.answer_callback_query(call.id, "⚠️ أمر غير معروف")
@@ -1365,6 +1466,37 @@ def set_start_step(message, user_id):
         bot.reply_to(message, f"⚠️ خطأ: {e}")
 
 # ============================================
+# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط)
+# ============================================
+def get_adjust_user_id(message):
+    if not is_owner(message.from_user.id):
+        return
+    try:
+        target_id = int(message.text.strip())
+        bot.send_message(message.chat.id, f"✅ المستخدم: {target_id}\nالآن أرسل عدد النقاط (استخدم - للخصم):")
+        bot.register_next_step_handler(message, get_adjust_points_amount, target_id)
+    except ValueError:
+        bot.reply_to(message, "❌ يرجى إدخال معرف مستخدم صحيح (أرقام فقط).")
+        return
+
+def get_adjust_points_amount(message, target_id):
+    if not is_owner(message.from_user.id):
+        return
+    try:
+        amount = int(message.text.strip())
+        old_points, new_points = adjust_user_points(target_id, amount)
+        bot.reply_to(message,
+            f"✅ **تم تعديل نقاط المستخدم**\n\n"
+            f"🆔 المستخدم: `{target_id}`\n"
+            f"📊 النقاط السابقة: {old_points}\n"
+            f"➕/- التعديل: {amount}\n"
+            f"💎 النقاط الجديدة: {new_points}\n"
+            f"📌 الحالة: {'✅ تم' if new_points > old_points else '❌ تم الخصم' if amount < 0 else '✅ تم الإضافة'}"
+        )
+    except ValueError:
+        bot.reply_to(message, "❌ يرجى إدخال عدد صحيح (مثل 10 أو -5).")
+
+# ============================================
 # 🖥️ خادم Flask
 # ============================================
 app = Flask(__name__)
@@ -1407,6 +1539,7 @@ if __name__ == "__main__":
     print(f"💀 تالفة: {len(load_dead_proxies())}")
     extra = load_extra_channels()
     print(f"📢 قنوات إضافية: {len(extra)}")
+    print(f"🐑 حد GiftSheep اليومي: {GIFTSHEEP_DAILY_LIMIT} إحالة")
     print("="*60)
     print("🚀 البوت يعمل...")
 
