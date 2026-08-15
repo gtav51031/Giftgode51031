@@ -34,7 +34,7 @@ GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
 GIFTSHEEP_DEFAULT_CODE = "W27PO5"
 GIFTSHEEP_DAILY_LIMIT = 25
-GIFTSHEEP_WAIT_SECONDS = 300  # ✅ 5 دقائق
+GIFTSHEEP_WAIT_SECONDS = 300  # 5 دقائق
 
 # ============================================
 # الوضعيات
@@ -194,7 +194,7 @@ def update_giftsheep_stats(user_id, success=True):
     save_user_settings(user_id, data)
 
 # ============================================
-# 📦 دوال البروكسيات
+# 📦 دوال البروكسيات (مع تدوير وحذف التالف)
 # ============================================
 def load_proxies():
     if os.path.exists(PROXIES_FILE):
@@ -205,8 +205,7 @@ def load_proxies():
                 if not p.startswith("http://") and not p.startswith("https://"):
                     p = f"http://{p}"
                 formatted.append(p)
-            if formatted:
-                return formatted
+            return formatted
     return []
 
 def save_proxies(proxies_list):
@@ -222,6 +221,43 @@ def load_dead_proxies():
 def save_dead_proxies(dead_list):
     with open(DEAD_PROXIES_FILE, "w") as f:
         f.write("\n".join(dead_list))
+
+# قائمة البروكسيات المستخدمة مؤقتاً لتجنب التكرار أثناء الجلسة
+used_proxies = []
+
+def get_next_proxy():
+    """
+    تعيد بروكسي صالحاً من القائمة، مع تجنب التكرار قدر الإمكان.
+    إذا نفدت البروكسيات، تعيد None.
+    """
+    proxies = load_proxies()
+    if not proxies:
+        return None
+    # تصفية البروكسيات المستخدمة حديثاً (آخر 3)
+    available = [p for p in proxies if p not in used_proxies[-3:]]
+    if not available:
+        available = proxies
+    proxy = random.choice(available)
+    used_proxies.append(proxy)
+    # نحد من حجم قائمة المستخدمة لتجنب الاستهلاك الكبير
+    if len(used_proxies) > 20:
+        used_proxies.pop(0)
+    return proxy
+
+def mark_proxy_dead(proxy):
+    """نقل بروكسي تالف إلى dead_proxies.txt وإزالته من الصالحة"""
+    if not proxy:
+        return
+    proxies = load_proxies()
+    if proxy in proxies:
+        proxies.remove(proxy)
+        save_proxies(proxies)
+        dead = load_dead_proxies()
+        if proxy not in dead:
+            dead.append(proxy)
+            save_dead_proxies(dead)
+        if proxy in used_proxies:
+            used_proxies.remove(proxy)
 
 # ============================================
 # 🎯 دوال الإحالات (GiftCode)
@@ -511,11 +547,14 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# ⚔️ حلقة الهجوم (GiftSheep تعتمد على الوقت)
+# ⚔️ حلقة الهجوم (مع تدوير البروكسيات)
 # ============================================
 attack_status = {}
 
 def attack_loop(user_id, chat_id):
+    global used_proxies
+    used_proxies = []  # إعادة تعيين قائمة البروكسيات المستخدمة عند بدء الهجوم
+
     user_id_str = str(user_id)
     mode = get_user_mode(user_id)
     mode_name = "GiftSheep" if mode == MODE_GIFTSHEEP else "GiftCode"
@@ -602,7 +641,14 @@ def attack_loop(user_id, chat_id):
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
 
-        result = process_referral(user_id, target, None)
+        # اختيار بروكسي للمحاولة
+        proxy = get_next_proxy()
+        if proxy:
+            bot.send_message(chat_id, f"🌐 استخدام بروكسي: {proxy}")
+        else:
+            bot.send_message(chat_id, "⚠️ لا يوجد بروكسيات صالحة، سيتم استخدام الـ IP المحلي.")
+
+        result = process_referral(user_id, target, proxy)
 
         if result.get("success"):
             successes += 1
@@ -624,11 +670,15 @@ def attack_loop(user_id, chat_id):
                 data["giftsheep_last_date"] = datetime.now().date().isoformat()
                 save_user_settings(user_id, data)
         else:
+            reason = result.get("reason", "غير معروف")
+            arabic_reason = translate_reason(reason)
             # إخفاء رسائل الفشل عن المستخدمين العاديين، تظهر فقط للمالك
             if is_owner(user_id):
-                reason = result.get("reason", "غير معروف")
-                arabic_reason = translate_reason(reason)
                 bot.send_message(OWNER_ID, f"فشل: {target} -> {arabic_reason}")
+            # إذا كان السبب هو same_ip أو proxy_dead، نحذف البروكسي من القائمة الصالحة
+            if reason in ["same_ip", "proxy_dead"] and proxy:
+                mark_proxy_dead(proxy)
+                bot.send_message(chat_id, f"🗑️ تم حذف البروكسي التالف: {proxy}")
 
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
@@ -917,7 +967,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 6. نشطاء GiftSheep ✅ ميزة جديدة
+    # 6. نشطاء GiftSheep
     if call.data == "owner_active_giftsheep":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -943,7 +993,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 7. تعديل نقاط مستخدم ✅ ميزة جديدة
+    # 7. تعديل نقاط مستخدم
     if call.data == "owner_adjust_points":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
