@@ -33,7 +33,8 @@ EXTRA_CHANNELS_FILE = "extra_channels.json"
 GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
 GIFTSHEEP_DEFAULT_CODE = "W27PO5"
-GIFTSHEEP_DAILY_LIMIT = 25  # ✅ تم التعديل: 25 محاولة يومياً
+GIFTSHEEP_DAILY_LIMIT = 25
+GIFTSHEEP_WAIT_SECONDS = 300  # ✅ 5 دقائق
 
 # ============================================
 # الوضعيات
@@ -568,37 +569,25 @@ def attack_loop(user_id, chat_id):
 
         if mode == MODE_GIFTSHEEP:
             current_time = time.time()
-            
-            # ✅ تم التعديل: الحد الأقصى 25 محاولة يومياً
             if daily_count >= GIFTSHEEP_DAILY_LIMIT:
-                # ✅ رسالة جديدة: التذكير بأن الوقت متاح غداً
                 bot.send_message(chat_id, 
                     f"✅ **تم الوصول إلى الحد الأقصى اليومي ({GIFTSHEEP_DAILY_LIMIT} إحالات)**\n\n"
                     f"🕒 **سيتم إعادة تعيين العداد عند منتصف الليل.**\n"
-                    f"⏰ **سيكون الوقت متاحاً غداً.**\n\n"
-                    f"💡 يمكنك متابعة الهجوم يدوياً بعد منتصف الليل."
+                    f"⏰ **سيكون الوقت متاحاً غداً.**"
                 )
                 attack_status[user_id_str]["running"] = False
                 break
 
-            if last_time > 0 and (current_time - last_time) < 3600:
-                remaining = int(3600 - (current_time - last_time))
+            if last_time > 0 and (current_time - last_time) < GIFTSHEEP_WAIT_SECONDS:
+                remaining = int(GIFTSHEEP_WAIT_SECONDS - (current_time - last_time))
                 minutes = remaining // 60
                 seconds = remaining % 60
                 bot.send_message(chat_id, 
                     f"⏳ **الانتظار قبل الإحالة التالية:**\n"
                     f"⏱️ {minutes} دقيقة و {seconds} ثانية\n\n"
-                    f"📊 **تقدم اليوم:** {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة\n\n"
-                    f"💡 سيتم إعلامك عندما يصبح الوقت متاحاً."
-                )
-                # ننتظر حتى انتهاء الوقت مع إرسال تذكير عند انتهائه
-                time.sleep(remaining)
-                # ✅ إرسال تذكير بأن الوقت أصبح متاحاً
-                bot.send_message(chat_id, 
-                    f"✅ **الوقت متاح الآن!**\n\n"
-                    f"🔄 يمكنك متابعة الإحالات.\n"
                     f"📊 **تقدم اليوم:** {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
                 )
+                time.sleep(remaining)
                 continue
 
         used_data = load_used_numbers(user_id, mode)
@@ -635,9 +624,11 @@ def attack_loop(user_id, chat_id):
                 data["giftsheep_last_date"] = datetime.now().date().isoformat()
                 save_user_settings(user_id, data)
         else:
-            reason = result.get("reason", "غير معروف")
-            arabic_reason = translate_reason(reason)
-            bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
+            # إخفاء رسائل الفشل عن المستخدمين العاديين، تظهر فقط للمالك
+            if is_owner(user_id):
+                reason = result.get("reason", "غير معروف")
+                arabic_reason = translate_reason(reason)
+                bot.send_message(OWNER_ID, f"فشل: {target} -> {arabic_reason}")
 
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
@@ -869,8 +860,10 @@ def handle_callback(call):
 
     # 2. تأكيد يوتيوب اختياري
     if call.data == "verify_youtube_optional":
-        set_user_setting(user_id, YOUTUBE_VERIFY_KEY, True)
-        set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
+        data = load_user_settings(user_id)
+        data[YOUTUBE_VERIFY_KEY] = True
+        data["youtube_verify_date"] = datetime.now().isoformat()
+        save_user_settings(user_id, data)
         bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك! شكراً لك.", show_alert=True)
         start_command(call.message)
         return
@@ -941,7 +934,6 @@ def handle_callback(call):
                 user_data = sessions.get(str(uid), {})
                 name = user_data.get("first_name", "مستخدم")
                 username = user_data.get("username", "")
-                # عرض إحصائيات اليوم
                 daily_count = load_user_settings(uid).get("giftsheep_daily_count", 0)
                 time_ago = format_time_ago(last_time)
                 if username:
@@ -958,10 +950,7 @@ def handle_callback(call):
             return
         msg = bot.send_message(chat_id, 
             "⚙️ **تعديل نقاط مستخدم**\n\n"
-            "أرسل معرف المستخدم (ID) أولاً، ثم في الرسالة التالية أرسل عدد النقاط المطلوب إضافتها (استخدم علامة - للخصم).\n\n"
-            "مثال:\n"
-            "`123456789` (المستخدم)\n"
-            "ثم أرسل `10` لإضافة 10 نقاط، أو `-5` لخصم 5 نقاط."
+            "أرسل معرف المستخدم (ID) أو اسم المستخدم (مثل @username):"
         )
         bot.register_next_step_handler(msg, get_adjust_user_id)
         return
@@ -1164,7 +1153,7 @@ def handle_callback(call):
 
     if call.data == "owner_check":
         if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "🔍 جاري فحص البروكسيات على الخادم...")
+        bot.answer_callback_query(call.id, "🔍 جاري فحص البروكسيات...")
         check_proxies(call.message)
         return
 
@@ -1403,6 +1392,9 @@ def process_bulk_proxies(message):
         f"🌐 العدد الإجمالي: {len(load_proxies())} بروكسي."
     )
 
+# ============================================
+# 🔍 فحص البروكسيات (معدل)
+# ============================================
 def check_proxies(message):
     proxies = load_proxies()
     if not proxies:
@@ -1413,7 +1405,6 @@ def check_proxies(message):
     dead = []
     total = len(proxies)
     for i, p in enumerate(proxies, 1):
-        bot.send_message(message.chat.id, f"⏳ اختبار {i}/{total}: {p}")
         try:
             test_params = {"referred_user_id": "9999999", "ref_code": "4094894"}
             test_headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
@@ -1427,22 +1418,42 @@ def check_proxies(message):
             )
             if response.status_code == 200:
                 working.append(p)
-                bot.send_message(message.chat.id, f"   ✅ صالح")
+                bot.send_message(message.chat.id, f"✅ {p} صالح")
             else:
                 dead.append(p)
-                bot.send_message(message.chat.id, f"   ❌ تالف (كود {response.status_code})")
-        except Exception as e:
+        except Exception:
             dead.append(p)
-            bot.send_message(message.chat.id, f"   💀 تالف ({str(e)[:30]})")
         time.sleep(0.5)
-    save_proxies(working)
-    save_dead_proxies(dead)
+    
+    # إضافة الصالحة إلى القائمة الحالية (بدون تكرار)
+    current = load_proxies()
+    current_set = set(current)
+    added = 0
+    for p in working:
+        if p not in current_set:
+            current.append(p)
+            current_set.add(p)
+            added += 1
+    save_proxies(current)
+    
+    # حفظ التالفة (دمج مع الموجودة)
+    existing_dead = load_dead_proxies()
+    dead_set = set(existing_dead)
+    for p in dead:
+        if p not in dead_set:
+            existing_dead.append(p)
+            dead_set.add(p)
+    save_dead_proxies(existing_dead)
+    
     bot.reply_to(message,
         f"✅ اكتمل الفحص.\n"
-        f"🟢 صالح: {len(working)}\n"
-        f"💀 تالف: {len(dead)}"
+        f"🟢 صالح ومضاف: {len(working)} (تمت إضافة {added} جديد)\n"
+        f"💀 تالف (تم حفظه): {len(dead)}"
     )
 
+# ============================================
+# 📝 دوال الخطوات النصية (متابعة)
+# ============================================
 def set_referral_step(message, user_id):
     try:
         value = message.text.strip()
@@ -1466,18 +1477,37 @@ def set_start_step(message, user_id):
         bot.reply_to(message, f"⚠️ خطأ: {e}")
 
 # ============================================
-# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط)
+# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط) - معدل
 # ============================================
 def get_adjust_user_id(message):
     if not is_owner(message.from_user.id):
         return
-    try:
-        target_id = int(message.text.strip())
-        bot.send_message(message.chat.id, f"✅ المستخدم: {target_id}\nالآن أرسل عدد النقاط (استخدم - للخصم):")
-        bot.register_next_step_handler(message, get_adjust_points_amount, target_id)
-    except ValueError:
-        bot.reply_to(message, "❌ يرجى إدخال معرف مستخدم صحيح (أرقام فقط).")
-        return
+    text = message.text.strip()
+    target_id = None
+    
+    # إذا كان النص يبدأ بـ @، نبحث عن المستخدم
+    if text.startswith("@"):
+        username = text[1:].lower()
+        sessions = load_user_sessions()
+        found = None
+        for uid_str, data in sessions.items():
+            if data.get("username", "").lower() == username:
+                found = int(uid_str)
+                break
+        if found:
+            target_id = found
+        else:
+            bot.reply_to(message, f"❌ لم أجد مستخدمًا باسم {text}.")
+            return
+    else:
+        try:
+            target_id = int(text)
+        except ValueError:
+            bot.reply_to(message, "❌ يرجى إدخال معرف المستخدم (ID) أو اسم المستخدم (مثل @username).")
+            return
+    
+    bot.send_message(message.chat.id, f"✅ المستخدم: {target_id}\nالآن أرسل عدد النقاط (استخدم - للخصم):")
+    bot.register_next_step_handler(message, get_adjust_points_amount, target_id)
 
 def get_adjust_points_amount(message, target_id):
     if not is_owner(message.from_user.id):
@@ -1490,8 +1520,7 @@ def get_adjust_points_amount(message, target_id):
             f"🆔 المستخدم: `{target_id}`\n"
             f"📊 النقاط السابقة: {old_points}\n"
             f"➕/- التعديل: {amount}\n"
-            f"💎 النقاط الجديدة: {new_points}\n"
-            f"📌 الحالة: {'✅ تم' if new_points > old_points else '❌ تم الخصم' if amount < 0 else '✅ تم الإضافة'}"
+            f"💎 النقاط الجديدة: {new_points}"
         )
     except ValueError:
         bot.reply_to(message, "❌ يرجى إدخال عدد صحيح (مثل 10 أو -5).")
@@ -1540,6 +1569,7 @@ if __name__ == "__main__":
     extra = load_extra_channels()
     print(f"📢 قنوات إضافية: {len(extra)}")
     print(f"🐑 حد GiftSheep اليومي: {GIFTSHEEP_DAILY_LIMIT} إحالة")
+    print(f"⏳ مدة الانتظار في GiftSheep: {GIFTSHEEP_WAIT_SECONDS} ثانية")
     print("="*60)
     print("🚀 البوت يعمل...")
 
