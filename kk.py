@@ -1,3 +1,4 @@
+
 import os
 import telebot
 import requests
@@ -195,7 +196,7 @@ def update_giftsheep_stats(user_id, success=True):
     save_user_settings(user_id, data)
 
 # ============================================
-# 📦 دوال البروكسيات (مع تدوير وحذف التالف)
+# 📦 دوال البروكسيات العامة
 # ============================================
 def load_proxies():
     if os.path.exists(PROXIES_FILE):
@@ -203,8 +204,6 @@ def load_proxies():
             proxies = [p.strip() for p in f.readlines() if p.strip()]
             formatted = []
             for p in proxies:
-                # إذا كان البروكسي يحتوي على @ فهو مدفوع (user:pass@host:port)
-                # نضيف http:// إذا لم تكن موجودة
                 if not p.startswith("http://") and not p.startswith("https://"):
                     p = f"http://{p}"
                 formatted.append(p)
@@ -225,7 +224,6 @@ def save_dead_proxies(dead_list):
     with open(DEAD_PROXIES_FILE, "w") as f:
         f.write("\n".join(dead_list))
 
-# قائمة البروكسيات المستخدمة مؤقتاً لتجنب التكرار أثناء الجلسة
 used_proxies = []
 
 def get_next_proxy():
@@ -299,7 +297,6 @@ def get_next_user_proxy(user_id):
     proxies = load_user_proxies(user_id)
     if not proxies:
         return None
-    # استخدام بروكسي عشوائي (يمكن إضافة تدوير مشابه)
     return random.choice(proxies)
 
 # ============================================
@@ -830,7 +827,7 @@ def start_command(message):
         set_youtube_prompt_shown(user_id)
         return
 
-    # القائمة الرئيسية
+    # ======== القائمة الرئيسية ========
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_set_ref = InlineKeyboardButton("🔑 تعيين كود الإحالة", callback_data="set_referral")
     btn_set_start = InlineKeyboardButton("🔢 تعيين رقم البداية", callback_data="set_start")
@@ -840,10 +837,13 @@ def start_command(message):
     btn_referral = InlineKeyboardButton("🔗 رابط الإحالة الخاص بي", callback_data="my_referral")
     btn_switch_mode = InlineKeyboardButton("🔄 تبديل الوضع", callback_data="switch_mode")
     btn_my_proxy = InlineKeyboardButton("🔑 إضافة بروكسي خاص", callback_data="add_my_proxy")
+    btn_my_proxies_list = InlineKeyboardButton("📋 عرض بروكسياتي", callback_data="my_proxies_list")
+
     keyboard.add(btn_set_ref, btn_set_start)
     keyboard.add(btn_start_attack, btn_stop_attack)
     keyboard.add(btn_status, btn_referral)
     keyboard.add(btn_switch_mode, btn_my_proxy)
+    keyboard.add(btn_my_proxies_list)
 
     if is_owner(user_id):
         btn_owner = InlineKeyboardButton("👑 أوامر المالك", callback_data="owner_commands")
@@ -903,6 +903,7 @@ def show_owner_menu(message):
     btn_check = InlineKeyboardButton("🔍 فحص البروكسيات (مع إيقاف)", callback_data="owner_check")
     btn_clear_dead = InlineKeyboardButton("🗑️ حذف التالفة", callback_data="owner_clear_dead")
     btn_delete_proxy = InlineKeyboardButton("🗑️ حذف بروكسي (صالحة/تالفة)", callback_data="owner_delete_proxy")
+    btn_user_proxies = InlineKeyboardButton("👑 عرض بروكسيات المستخدمين", callback_data="owner_user_proxies")
     btn_stats = InlineKeyboardButton("📊 الإحصائيات العامة", callback_data="owner_stats")
     btn_giftsheep_stats = InlineKeyboardButton("📊 إحصائيات GiftSheep", callback_data="owner_giftsheep_stats")
     btn_clear_sessions = InlineKeyboardButton("🧹 مسح الجلسات", callback_data="owner_clear_sessions")
@@ -920,7 +921,7 @@ def show_owner_menu(message):
     keyboard.add(btn_add_proxy, btn_bulk_proxy)
     keyboard.add(btn_refresh, btn_list)
     keyboard.add(btn_check, btn_clear_dead)
-    keyboard.add(btn_delete_proxy)
+    keyboard.add(btn_delete_proxy, btn_user_proxies)
     keyboard.add(btn_stats, btn_giftsheep_stats)
     keyboard.add(btn_clear_sessions)
     keyboard.add(btn_add_channel, btn_list_channels)
@@ -1054,26 +1055,97 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, get_adjust_user_id)
         return
 
-    # 8. إضافة بروكسي خاص للمستخدم
+    # 8. إضافة بروكسي خاص للمستخدم (طلب إدخال البروكسي واليوزر والباسورد)
     if call.data == "add_my_proxy":
-        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي الخاص بك:")
+        bot.answer_callback_query(call.id, "✏️ أدخل البروكسي (IP:PORT أو user:pass@IP:PORT):")
         msg = bot.send_message(chat_id, 
-            "🌐 **أرسل البروكسي الخاص بك**\n\n"
-            "📌 الصيغة المدعومة:\n"
-            "- عادي: `IP:PORT`\n"
-            "- مدفوع: `user:pass@IP:PORT`\n\n"
-            "مثال: `user123:pass123@178.104.83.44:20021`"
+            "🌐 **أدخل البروكسي الخاص بك**\n\n"
+            "📌 الصيغ المدعومة:\n"
+            "- عادي: `IP:PORT` (مثال: `178.104.83.44:20021`)\n"
+            "- مدفوع: `user:pass@IP:PORT` (مثال: `Gftyhf:Ggghh@178.104.83.44:20021`)\n\n"
+            "أو أدخل بيانات منفصلة:\n"
+            "أولاً: البروكسي (IP:PORT)\n"
+            "ثانياً: اليوزر (اختياري)\n"
+            "ثالثاً: الباسورد (اختياري)\n\n"
+            "إذا أردت الإدخال المنفصل، أرسل `IP:PORT` فقط الآن، وسأطلب الباقي."
         )
-        bot.register_next_step_handler(msg, add_my_proxy_step, user_id)
+        bot.register_next_step_handler(msg, add_my_proxy_step1, user_id)
         return
 
-    # 9. زر إيقاف فحص البروكسيات
+    # 9. عرض بروكسيات المستخدم
+    if call.data == "my_proxies_list":
+        proxies = load_user_proxies(user_id)
+        if not proxies:
+            bot.reply_to(call.message, "📭 ليس لديك بروكسيات خاصة.")
+        else:
+            text = "📋 **بروكسياتك الخاصة:**\n\n"
+            for i, p in enumerate(proxies, 1):
+                # إخفاء الباسورد إذا وجد
+                if '@' in p:
+                    parts = p.replace('http://', '').split('@')
+                    if len(parts) == 2:
+                        user_pass = parts[0].split(':')
+                        if len(user_pass) == 2:
+                            hidden = f"{user_pass[0]}:****@{parts[1]}"
+                            text += f"{i}. `{hidden}`\n"
+                        else:
+                            text += f"{i}. `{p}`\n"
+                    else:
+                        text += f"{i}. `{p}`\n"
+                else:
+                    text += f"{i}. `{p}`\n"
+            bot.reply_to(call.message, text, parse_mode=None)
+        return
+
+    # 10. المالك: عرض بروكسيات جميع المستخدمين
+    if call.data == "owner_user_proxies":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ للمالك فقط!", show_alert=True)
+            return
+
+        user_files = [f for f in os.listdir(DATA_DIR) if f.startswith("user_proxies_") and f.endswith(".txt")]
+        if not user_files:
+            bot.reply_to(call.message, "📭 لا يوجد مستخدمون أضافوا بروكسيات.")
+            return
+
+        text = "👑 **بروكسيات المستخدمين:**\n\n"
+        sessions = load_user_sessions()
+
+        for file in user_files:
+            user_id_str = file.replace("user_proxies_", "").replace(".txt", "")
+            try:
+                uid = int(user_id_str)
+            except:
+                continue
+
+            user_data = sessions.get(user_id_str, {})
+            username = user_data.get("username", "بدون اسم")
+            first_name = user_data.get("first_name", "مستخدم")
+            proxies = load_user_proxies(uid)
+
+            if proxies:
+                text += f"👤 {first_name} (@{username}) [ID: {uid}]\n"
+                for p in proxies:
+                    text += f"   • `{p}`\n"
+            else:
+                text += f"👤 {first_name} (@{username}) - لا يوجد بروكسيات\n"
+            text += "\n"
+
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                bot.reply_to(call.message, part, parse_mode=None)
+        else:
+            bot.reply_to(call.message, text, parse_mode=None)
+        return
+
+    # 11. زر إيقاف فحص البروكسيات
     if call.data == "stop_checking":
         stop_checking = True
         bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الفحص...", show_alert=True)
         return
 
-    # 10. باقي الأزرار
+    # 12. باقي الأزرار
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -1499,19 +1571,105 @@ def add_proxy_step(message):
     save_proxies(proxies)
     bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(load_proxies())}")
 
-def add_my_proxy_step(message, user_id):
+# ============================================
+# 📝 دوال إضافة بروكسي خاص (ثلاث خطوات)
+# ============================================
+user_proxy_data = {}  # تخزين مؤقت لبيانات البروكسي أثناء الإدخال
+
+def add_my_proxy_step1(message, user_id):
+    """الخطوة 1: استلام البروكسي (IP:PORT أو user:pass@IP:PORT)"""
     proxy = message.text.strip()
     if not proxy:
         bot.reply_to(message, "❌ لم ترسل أي بروكسي!")
         return
-    if not proxy.startswith("http://") and not proxy.startswith("https://"):
-        proxy = f"http://{proxy}"
-    if add_user_proxy(user_id, proxy):
-        bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{proxy}`")
+
+    # تنظيف البروكسي من أي نصوص إضافية
+    proxy_pattern = re.compile(r'((?:[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})')
+    match = proxy_pattern.search(proxy)
+    if not match:
+        bot.reply_to(message, "❌ لم أجد بروكسي صحيحاً! تأكد من الصيغة: `IP:PORT` أو `user:pass@IP:PORT`")
+        return
+
+    clean_proxy = match.group(1)
+    user_proxy_data[user_id] = {"proxy": clean_proxy}
+
+    # إذا كان البروكسي يحتوي على @ فهو مدفوع (user:pass@IP:PORT)
+    if '@' in clean_proxy:
+        # استخراج user:pass من الجزء الأول
+        parts = clean_proxy.split('@')
+        if len(parts) == 2:
+            user_pass = parts[0]
+            ip_port = parts[1]
+            user_proxy_data[user_id]["ip_port"] = ip_port
+            # إذا كان user:pass يحتوي على : نقسمه
+            if ':' in user_pass:
+                up = user_pass.split(':', 1)
+                user_proxy_data[user_id]["username"] = up[0]
+                user_proxy_data[user_id]["password"] = up[1] if len(up) > 1 else ""
+                # حفظ البروكسي مباشرة
+                proxy_with_auth = f"http://{user_pass}@{ip_port}"
+                add_user_proxy(user_id, proxy_with_auth)
+                count = len(load_user_proxies(user_id))
+                bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{proxy_with_auth}`\n📋 عدد بروكسياتك: {count}")
+                # تنظيف البيانات المؤقتة
+                if user_id in user_proxy_data:
+                    del user_proxy_data[user_id]
+                return
+    else:
+        # بروكسي عادي بدون يوزر وباسورد، نطلبهما اختيارياً
+        bot.reply_to(message, "📌 أدخل اسم المستخدم (إذا كان مطلوباً، وإلا اكتب `-` للتخطي):")
+        bot.register_next_step_handler(message, add_my_proxy_step2, user_id)
+        return
+
+def add_my_proxy_step2(message, user_id):
+    """الخطوة 2: استلام اسم المستخدم (اختياري)"""
+    username = message.text.strip()
+    if username == "-":
+        username = ""
+    user_proxy_data[user_id]["username"] = username
+    bot.reply_to(message, "📌 أدخل كلمة المرور (إذا كانت مطلوبة، وإلا اكتب `-` للتخطي):")
+    bot.register_next_step_handler(message, add_my_proxy_step3, user_id)
+
+def add_my_proxy_step3(message, user_id):
+    """الخطوة 3: استلام كلمة المرور (اختياري) وحفظ البروكسي"""
+    password = message.text.strip()
+    if password == "-":
+        password = ""
+
+    data = user_proxy_data.get(user_id, {})
+    proxy = data.get("proxy", "")
+    username = data.get("username", "")
+    final_proxy = proxy
+
+    # إذا كان هناك username أو password نضيفهم
+    if username or password:
+        # استخراج IP:PORT من البروكسي (بدون @)
+        if '@' in proxy:
+            ip_port = proxy.split('@')[1]
+        else:
+            ip_port = proxy
+        if username and password:
+            final_proxy = f"http://{username}:{password}@{ip_port}"
+        elif username:
+            final_proxy = f"http://{username}@{ip_port}"
+        elif password:
+            # نادراً ما يكون باسورد بدون يوزر، لكن نتعامل معه
+            final_proxy = f"http://:{password}@{ip_port}"
+    else:
+        # بروكسي عادي
+        if not final_proxy.startswith("http://") and not final_proxy.startswith("https://"):
+            final_proxy = f"http://{final_proxy}"
+
+    if add_user_proxy(user_id, final_proxy):
+        bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{final_proxy}`")
         count = len(load_user_proxies(user_id))
         bot.send_message(message.chat.id, f"📋 عدد بروكسياتك: {count}")
     else:
         bot.reply_to(message, f"⚠️ هذا البروكسي موجود مسبقاً.")
+
+    # تنظيف البيانات المؤقتة
+    if user_id in user_proxy_data:
+        del user_proxy_data[user_id]
 
 def process_bulk_proxies(message):
     if not is_owner(message.from_user.id):
@@ -1537,7 +1695,11 @@ def process_bulk_proxies(message):
         return
 
     formatted = []
+    proxy_pattern = re.compile(r'((?:[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})')
     for p in proxies_list:
+        match = proxy_pattern.search(p)
+        if match:
+            p = match.group(1)
         if not p.startswith("http://") and not p.startswith("https://"):
             p = f"http://{p}"
         formatted.append(p)
@@ -1568,11 +1730,10 @@ def check_proxies(message):
         bot.reply_to(message, "📭 لا يوجد بروكسيات لفحصها.")
         return
 
-    # زر إيقاف الفحص
     stop_keyboard = InlineKeyboardMarkup()
     stop_keyboard.add(InlineKeyboardButton("⏹️ إيقاف الفحص", callback_data="stop_checking"))
 
-    msg = bot.reply_to(message,
+    bot.reply_to(message,
         f"🔍 جاري فحص {len(proxies)} بروكسي... (باستخدام 30 خيطاً متوازياً)\n"
         f"⏱️ اضغط زر الإيقاف إذا أردت إنهاء الفحص.",
         reply_markup=stop_keyboard
@@ -1665,7 +1826,7 @@ def set_start_step(message, user_id):
         bot.reply_to(message, f"⚠️ خطأ: {e}")
 
 # ============================================
-# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط) - معدل
+# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط)
 # ============================================
 def get_adjust_user_id(message):
     if not is_owner(message.from_user.id):
