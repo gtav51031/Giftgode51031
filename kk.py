@@ -7,6 +7,7 @@ import random
 import threading
 import uuid
 import re
+import concurrent.futures
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
@@ -47,13 +48,20 @@ MODE_GIFTSHEEP = "giftsheep"
 # ============================================
 PROXIES_FILE = "proxies.txt"
 DEAD_PROXIES_FILE = "dead_proxies.txt"
+PREMIUM_PROXIES_FILE = "premium_proxies.txt"
+USER_PROXIES_DIR = "user_proxies"
 DATA_DIR = "user_data"
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
+if not os.path.exists(USER_PROXIES_DIR):
+    os.makedirs(USER_PROXIES_DIR)
 
 def get_user_file(user_id, filename):
     return os.path.join(DATA_DIR, f"{filename}_{user_id}.json")
+
+def get_user_proxy_file(user_id):
+    return os.path.join(USER_PROXIES_DIR, f"user_{user_id}_proxies.txt")
 
 # ============================================
 # 👥 المستخدمون النشطون
@@ -222,25 +230,72 @@ def save_dead_proxies(dead_list):
     with open(DEAD_PROXIES_FILE, "w") as f:
         f.write("\n".join(dead_list))
 
+def load_premium_proxies():
+    if os.path.exists(PREMIUM_PROXIES_FILE):
+        with open(PREMIUM_PROXIES_FILE, "r") as f:
+            proxies = [p.strip() for p in f.readlines() if p.strip()]
+            formatted = []
+            for p in proxies:
+                if not p.startswith("http://") and not p.startswith("https://"):
+                    p = f"http://{p}"
+                formatted.append(p)
+            return formatted
+    return []
+
+def save_premium_proxies(proxies_list):
+    with open(PREMIUM_PROXIES_FILE, "w") as f:
+        f.write("\n".join(proxies_list))
+
+def load_user_proxies(user_id):
+    filepath = get_user_proxy_file(user_id)
+    if os.path.exists(filepath):
+        with open(filepath, "r") as f:
+            proxies = [p.strip() for p in f.readlines() if p.strip()]
+            formatted = []
+            for p in proxies:
+                if not p.startswith("http://") and not p.startswith("https://"):
+                    p = f"http://{p}"
+                formatted.append(p)
+            return formatted
+    return []
+
+def save_user_proxies(user_id, proxies_list):
+    filepath = get_user_proxy_file(user_id)
+    with open(filepath, "w") as f:
+        f.write("\n".join(proxies_list))
+
 # قائمة البروكسيات المستخدمة مؤقتاً لتجنب التكرار أثناء الجلسة
 used_proxies = []
 
-def get_next_proxy():
+def get_next_proxy(user_id=None):
     """
     تعيد بروكسي صالحاً من القائمة، مع تجنب التكرار قدر الإمكان.
-    إذا نفدت البروكسيات، تعيد None.
+    إذا كان هناك بروكسيات خاصة بالمستخدم، تعطيها الأولوية.
+    ثم البروكسيات المدفوعة، ثم العامة.
     """
-    proxies = load_proxies()
+    proxies = []
+    # 1. بروكسيات المستخدم الخاصة
+    if user_id:
+        user_proxies = load_user_proxies(user_id)
+        proxies.extend(user_proxies)
+    # 2. بروكسيات مدفوعة
+    if not proxies:
+        proxies.extend(load_premium_proxies())
+    # 3. بروكسيات عامة
+    if not proxies:
+        proxies = load_proxies()
+    
     if not proxies:
         return None
-    # تصفية البروكسيات المستخدمة حديثاً (آخر 3)
-    available = [p for p in proxies if p not in used_proxies[-3:]]
+    
+    # تصفية البروكسيات المستخدمة حديثاً (آخر 5)
+    available = [p for p in proxies if p not in used_proxies[-5:]]
     if not available:
         available = proxies
+    
     proxy = random.choice(available)
     used_proxies.append(proxy)
-    # نحد من حجم قائمة المستخدمة لتجنب الاستهلاك الكبير
-    if len(used_proxies) > 20:
+    if len(used_proxies) > 30:
         used_proxies.pop(0)
     return proxy
 
@@ -248,6 +303,8 @@ def mark_proxy_dead(proxy):
     """نقل بروكسي تالف إلى dead_proxies.txt وإزالته من الصالحة"""
     if not proxy:
         return
+    
+    # حذف من العامة
     proxies = load_proxies()
     if proxy in proxies:
         proxies.remove(proxy)
@@ -258,6 +315,38 @@ def mark_proxy_dead(proxy):
             save_dead_proxies(dead)
         if proxy in used_proxies:
             used_proxies.remove(proxy)
+        return
+    
+    # حذف من المدفوعة
+    premium = load_premium_proxies()
+    if proxy in premium:
+        premium.remove(proxy)
+        save_premium_proxies(premium)
+        dead = load_dead_proxies()
+        if proxy not in dead:
+            dead.append(proxy)
+            save_dead_proxies(dead)
+        if proxy in used_proxies:
+            used_proxies.remove(proxy)
+        return
+    
+    # حذف من بروكسيات المستخدمين (نبحث في جميع الملفات)
+    for fname in os.listdir(USER_PROXIES_DIR):
+        if fname.startswith("user_") and fname.endswith("_proxies.txt"):
+            filepath = os.path.join(USER_PROXIES_DIR, fname)
+            with open(filepath, "r") as f:
+                lines = [p.strip() for p in f.readlines() if p.strip()]
+            if proxy in lines:
+                lines.remove(proxy)
+                with open(filepath, "w") as f:
+                    f.write("\n".join(lines))
+                dead = load_dead_proxies()
+                if proxy not in dead:
+                    dead.append(proxy)
+                    save_dead_proxies(dead)
+                if proxy in used_proxies:
+                    used_proxies.remove(proxy)
+                return
 
 # ============================================
 # 🎯 دوال الإحالات (GiftCode)
@@ -481,7 +570,6 @@ def set_youtube_prompt_shown(user_id):
 # 👑 دوال المالك: التحكم في نقاط المستخدمين
 # ============================================
 def adjust_user_points(user_id, amount):
-    """إضافة أو خصم نقاط من مستخدم"""
     current = load_user_points(user_id)
     new_points = max(0, current + amount)
     save_user_points(user_id, new_points)
@@ -550,10 +638,11 @@ def translate_reason(reason):
 # ⚔️ حلقة الهجوم (مع تدوير البروكسيات)
 # ============================================
 attack_status = {}
+checking_status = {}  # حالة فحص البروكسيات
 
 def attack_loop(user_id, chat_id):
     global used_proxies
-    used_proxies = []  # إعادة تعيين قائمة البروكسيات المستخدمة عند بدء الهجوم
+    used_proxies = []
 
     user_id_str = str(user_id)
     mode = get_user_mode(user_id)
@@ -641,8 +730,7 @@ def attack_loop(user_id, chat_id):
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
 
-        # اختيار بروكسي للمحاولة
-        proxy = get_next_proxy()
+        proxy = get_next_proxy(user_id)
         if proxy:
             bot.send_message(chat_id, f"🌐 استخدام بروكسي: {proxy}")
         else:
@@ -672,10 +760,8 @@ def attack_loop(user_id, chat_id):
         else:
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
-            # إخفاء رسائل الفشل عن المستخدمين العاديين، تظهر فقط للمالك
             if is_owner(user_id):
                 bot.send_message(OWNER_ID, f"فشل: {target} -> {arabic_reason}")
-            # إذا كان السبب هو same_ip أو proxy_dead، نحذف البروكسي من القائمة الصالحة
             if reason in ["same_ip", "proxy_dead"] and proxy:
                 mark_proxy_dead(proxy)
                 bot.send_message(chat_id, f"🗑️ تم حذف البروكسي التالف: {proxy}")
@@ -768,7 +854,6 @@ def start_command(message):
         )
         return
 
-    # عرض رسالة اليوتيوب (مرة واحدة، اختيارية)
     if not has_youtube_prompt_shown(user_id):
         keyboard_yt = InlineKeyboardMarkup()
         btn_yt = InlineKeyboardButton("🎬 اشترك في اليوتيوب", url=CHANNEL_YT)
@@ -785,7 +870,6 @@ def start_command(message):
         set_youtube_prompt_shown(user_id)
         return
 
-    # القائمة الرئيسية
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_set_ref = InlineKeyboardButton("🔑 تعيين كود الإحالة", callback_data="set_referral")
     btn_set_start = InlineKeyboardButton("🔢 تعيين رقم البداية", callback_data="set_start")
@@ -794,10 +878,13 @@ def start_command(message):
     btn_status = InlineKeyboardButton("📊 الحالة", callback_data="status")
     btn_referral = InlineKeyboardButton("🔗 رابط الإحالة الخاص بي", callback_data="my_referral")
     btn_switch_mode = InlineKeyboardButton("🔄 تبديل الوضع", callback_data="switch_mode")
+    btn_add_proxy = InlineKeyboardButton("➕ إضافة بروكسي خاص", callback_data="add_my_proxy")
+    btn_list_my_proxies = InlineKeyboardButton("📋 بروكسياتي", callback_data="list_my_proxies")
     keyboard.add(btn_set_ref, btn_set_start)
     keyboard.add(btn_start_attack, btn_stop_attack)
     keyboard.add(btn_status, btn_referral)
     keyboard.add(btn_switch_mode)
+    keyboard.add(btn_add_proxy, btn_list_my_proxies)
 
     if is_owner(user_id):
         btn_owner = InlineKeyboardButton("👑 أوامر المالك", callback_data="owner_commands")
@@ -850,12 +937,15 @@ def get_my_id(message):
 # ============================================
 def show_owner_menu(message):
     keyboard = InlineKeyboardMarkup(row_width=2)
-    btn_add_proxy = InlineKeyboardButton("➕ إضافة بروكسي", callback_data="owner_add_proxy")
+    btn_add_proxy = InlineKeyboardButton("➕ إضافة بروكسي عام", callback_data="owner_add_proxy")
     btn_bulk_proxy = InlineKeyboardButton("📦 إضافة بروكسيات (دفعة)", callback_data="owner_add_bulk")
+    btn_add_premium = InlineKeyboardButton("💎 إضافة بروكسي مدفوع", callback_data="owner_add_premium")
     btn_refresh = InlineKeyboardButton("🔄 تحديث البروكسيات", callback_data="owner_refresh")
     btn_list = InlineKeyboardButton("📋 عرض البروكسيات", callback_data="owner_list")
-    btn_check = InlineKeyboardButton("🔍 فحص البروكسيات (على الخادم)", callback_data="owner_check")
+    btn_check = InlineKeyboardButton("🔍 فحص البروكسيات", callback_data="owner_check")
+    btn_stop_check = InlineKeyboardButton("⏹️ إيقاف الفحص", callback_data="owner_stop_check")
     btn_clear_dead = InlineKeyboardButton("🗑️ حذف التالفة", callback_data="owner_clear_dead")
+    btn_delete_proxy = InlineKeyboardButton("🗑️ حذف بروكسي", callback_data="owner_delete_proxy")
     btn_stats = InlineKeyboardButton("📊 الإحصائيات العامة", callback_data="owner_stats")
     btn_giftsheep_stats = InlineKeyboardButton("📊 إحصائيات GiftSheep", callback_data="owner_giftsheep_stats")
     btn_clear_sessions = InlineKeyboardButton("🧹 مسح الجلسات", callback_data="owner_clear_sessions")
@@ -871,8 +961,10 @@ def show_owner_menu(message):
     btn_adjust_points = InlineKeyboardButton("⚙️ تعديل نقاط مستخدم", callback_data="owner_adjust_points")
 
     keyboard.add(btn_add_proxy, btn_bulk_proxy)
+    keyboard.add(btn_add_premium)
     keyboard.add(btn_refresh, btn_list)
-    keyboard.add(btn_check, btn_clear_dead)
+    keyboard.add(btn_check, btn_stop_check)
+    keyboard.add(btn_clear_dead, btn_delete_proxy)
     keyboard.add(btn_stats, btn_giftsheep_stats)
     keyboard.add(btn_clear_sessions)
     keyboard.add(btn_add_channel, btn_list_channels)
@@ -893,7 +985,7 @@ def handle_callback(call):
     chat_id = call.message.chat.id
     update_user_activity(user_id)
 
-    # 1. تأكيد الإحالة
+    # تأكيد الإحالة
     if call.data.startswith("confirm_referral_"):
         referrer_id = int(call.data.replace("confirm_referral_", ""))
         if not is_subscribed_telegram(user_id):
@@ -908,7 +1000,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 2. تأكيد يوتيوب اختياري
+    # تأكيد يوتيوب اختياري
     if call.data == "verify_youtube_optional":
         data = load_user_settings(user_id)
         data[YOUTUBE_VERIFY_KEY] = True
@@ -923,7 +1015,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 3. تبديل الوضع
+    # تبديل الوضع
     if call.data == "switch_mode":
         current_mode = get_user_mode(user_id)
         new_mode = MODE_GIFTSHEEP if current_mode == MODE_GIFTCODE else MODE_GIFTCODE
@@ -933,7 +1025,25 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 4. أوامر المالك
+    # إضافة بروكسي خاص للمستخدم
+    if call.data == "add_my_proxy":
+        msg = bot.send_message(chat_id, "🌐 أرسل البروكسي (مثال: 192.168.1.1:8080):")
+        bot.register_next_step_handler(msg, add_user_proxy_step, user_id)
+        return
+
+    # عرض بروكسيات المستخدم
+    if call.data == "list_my_proxies":
+        proxies = load_user_proxies(user_id)
+        if not proxies:
+            bot.reply_to(call.message, "📭 ليس لديك بروكسيات خاصة.")
+            return
+        text = "📋 **بروكسياتك الخاصة:**\n\n"
+        for i, p in enumerate(proxies, 1):
+            text += f"{i}. {p}\n"
+        bot.reply_to(call.message, text, parse_mode=None)
+        return
+
+    # أوامر المالك
     if call.data == "owner_commands":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -942,7 +1052,65 @@ def handle_callback(call):
         show_owner_menu(call.message)
         return
 
-    # 5. نشطاء GiftCode
+    # إضافة بروكسي مدفوع
+    if call.data == "owner_add_premium":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+        msg = bot.send_message(chat_id, "💎 أرسل البروكسي المدفوع (مثال: 192.168.1.1:8080):")
+        bot.register_next_step_handler(msg, add_premium_proxy_step)
+        return
+
+    # حذف بروكسي (عام/مدفوع/خاص)
+    if call.data == "owner_delete_proxy":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+        # عرض قائمة بالبروكسيات الصالحة والمدفوعة
+        proxies = load_proxies()
+        premium = load_premium_proxies()
+        all_proxies = []
+        for p in proxies:
+            all_proxies.append(("عام", p))
+        for p in premium:
+            all_proxies.append(("مدفوع", p))
+        if not all_proxies:
+            bot.reply_to(call.message, "📭 لا يوجد بروكسيات لحذفها.")
+            return
+        keyboard = InlineKeyboardMarkup()
+        for i, (p_type, p) in enumerate(all_proxies[:20]):
+            keyboard.add(InlineKeyboardButton(f"🗑️ {p_type}: {p}", callback_data=f"delete_proxy_{i}"))
+        keyboard.add(InlineKeyboardButton("🔙 إلغاء", callback_data="owner_commands"))
+        # تخزين القائمة مؤقتاً للرجوع إليها
+        bot.reply_to(call.message, "اختر بروكسياً لحذفه:", reply_markup=keyboard)
+        return
+
+    if call.data.startswith("delete_proxy_"):
+        if not is_owner(user_id):
+            return
+        idx = int(call.data.replace("delete_proxy_", ""))
+        proxies = load_proxies()
+        premium = load_premium_proxies()
+        all_proxies = []
+        for p in proxies:
+            all_proxies.append(("عام", p))
+        for p in premium:
+            all_proxies.append(("مدفوع", p))
+        if idx < len(all_proxies):
+            p_type, proxy = all_proxies[idx]
+            if p_type == "عام":
+                proxies.remove(proxy)
+                save_proxies(proxies)
+            else:
+                premium.remove(proxy)
+                save_premium_proxies(premium)
+            bot.answer_callback_query(call.id, f"✅ تم حذف {p_type}: {proxy}", show_alert=True)
+            bot.reply_to(call.message, f"✅ تم حذف {p_type}: {proxy}")
+        else:
+            bot.answer_callback_query(call.id, "⚠️ بروكسي غير موجود", show_alert=True)
+        return
+
+    # نشطاء GiftCode
     if call.data == "owner_active_giftcode":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -967,7 +1135,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 6. نشطاء GiftSheep
+    # نشطاء GiftSheep
     if call.data == "owner_active_giftsheep":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -993,7 +1161,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text, parse_mode=None)
         return
 
-    # 7. تعديل نقاط مستخدم
+    # تعديل نقاط مستخدم
     if call.data == "owner_adjust_points":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -1005,7 +1173,7 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, get_adjust_user_id)
         return
 
-    # 8. باقي الأزرار (اختصار)
+    # باقي الأزرار
     if call.data == "check_sub":
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if sub_ok:
@@ -1177,7 +1345,7 @@ def handle_callback(call):
 
     if call.data == "owner_add_proxy":
         if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي الجديد:")
+        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي العام الجديد:")
         msg = bot.send_message(chat_id, "🌐 أرسل البروكسي (مثال: 192.168.1.1:8080):")
         bot.register_next_step_handler(msg, add_proxy_step)
         return
@@ -1192,19 +1360,45 @@ def handle_callback(call):
     if call.data == "owner_list":
         if not is_owner(user_id): return
         proxies = load_proxies()
-        if not proxies:
-            bot.reply_to(call.message, "📭 لا يوجد بروكسيات.")
-            return
-        text = "🌐 البروكسيات:\n\n"
-        for i, p in enumerate(proxies, 1):
-            text += f"{i}. {p}\n"
-        bot.reply_to(call.message, text)
+        premium = load_premium_proxies()
+        text = "🌐 **البروكسيات العامة:**\n\n"
+        if proxies:
+            for i, p in enumerate(proxies, 1):
+                text += f"{i}. {p}\n"
+        else:
+            text += "📭 لا يوجد بروكسيات عامة.\n"
+        text += "\n💎 **البروكسيات المدفوعة:**\n\n"
+        if premium:
+            for i, p in enumerate(premium, 1):
+                text += f"{i}. {p} [PREMIUM]\n"
+        else:
+            text += "📭 لا يوجد بروكسيات مدفوعة.\n"
+        bot.reply_to(call.message, text, parse_mode=None)
         return
 
     if call.data == "owner_check":
         if not is_owner(user_id): return
+        # التحقق من عدم وجود فحص قيد التشغيل
+        if checking_status.get("running", False):
+            bot.answer_callback_query(call.id, "⚠️ فحص قيد التشغيل بالفعل!", show_alert=True)
+            return
         bot.answer_callback_query(call.id, "🔍 جاري فحص البروكسيات...")
-        check_proxies(call.message)
+        # تشغيل الفحص في خيط منفصل مع إمكانية الإيقاف
+        thread = threading.Thread(target=run_check_proxies, args=(call.message,))
+        thread.daemon = True
+        thread.start()
+        return
+
+    if call.data == "owner_stop_check":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+        if checking_status.get("running", False):
+            checking_status["running"] = False
+            bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الفحص...", show_alert=True)
+            bot.reply_to(call.message, "⏹️ تم إيقاف فحص البروكسيات.")
+        else:
+            bot.answer_callback_query(call.id, "⚠️ لا يوجد فحص نشط!", show_alert=True)
         return
 
     if call.data == "owner_clear_dead":
@@ -1310,7 +1504,8 @@ def handle_callback(call):
                 text += f"🟢 النشطين (مشتركين): {active}\n"
                 text += f"✅ GC نجاح: {total_success_gc}\n"
                 text += f"✅ GS نجاح: {total_success_gs}\n"
-                text += f"🌐 بروكسيات: {len(load_proxies())}\n"
+                text += f"🌐 بروكسيات عامة: {len(load_proxies())}\n"
+                text += f"💎 بروكسيات مدفوعة: {len(load_premium_proxies())}\n"
                 bot.edit_message_text(text, chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
             except Exception as e:
                 bot.edit_message_text(f"⚠️ خطأ: {str(e)[:200]}", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
@@ -1343,7 +1538,7 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! سيتم استخدام الـ IP المحلي.", show_alert=True)
             bot.send_message(chat_id, "✅ تم التبديل إلى الـ IP المحلي.")
             return
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(new_proxies)}", show_alert=True)
+        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات العامة: {len(new_proxies)}", show_alert=True)
         return
 
     bot.answer_callback_query(call.id, "⚠️ أمر غير معروف")
@@ -1397,7 +1592,27 @@ def add_proxy_step(message):
     proxies = load_proxies()
     proxies.append(proxy)
     save_proxies(proxies)
-    bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(load_proxies())}")
+    bot.reply_to(message, f"✅ تم إضافة بروكسي عام:\n{proxy}\n🌐 العدد: {len(load_proxies())}")
+
+def add_premium_proxy_step(message):
+    if not is_owner(message.from_user.id):
+        return
+    proxy = message.text.strip()
+    if not proxy.startswith("http://"):
+        proxy = f"http://{proxy}"
+    premium = load_premium_proxies()
+    premium.append(proxy)
+    save_premium_proxies(premium)
+    bot.reply_to(message, f"✅ تم إضافة بروكسي مدفوع:\n{proxy}\n💎 العدد: {len(load_premium_proxies())}")
+
+def add_user_proxy_step(message, user_id):
+    proxy = message.text.strip()
+    if not proxy.startswith("http://"):
+        proxy = f"http://{proxy}"
+    user_proxies = load_user_proxies(user_id)
+    user_proxies.append(proxy)
+    save_user_proxies(user_id, user_proxies)
+    bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n{proxy}\n📋 عدد بروكسياتك: {len(load_user_proxies(user_id))}")
 
 def process_bulk_proxies(message):
     if not is_owner(message.from_user.id):
@@ -1438,55 +1653,99 @@ def process_bulk_proxies(message):
             added += 1
     save_proxies(current)
     bot.reply_to(message,
-        f"✅ تم إضافة {added} بروكسي جديد.\n"
+        f"✅ تم إضافة {added} بروكسي عام جديد.\n"
         f"🌐 العدد الإجمالي: {len(load_proxies())} بروكسي."
     )
 
 # ============================================
-# 🔍 فحص البروكسيات (معدل)
+# 🔍 فحص البروكسيات (سريع ومتوازي مع إمكانية الإيقاف)
 # ============================================
-def check_proxies(message):
-    proxies = load_proxies()
-    if not proxies:
-        bot.reply_to(message, "📭 لا يوجد بروكسيات لفحصها.")
+def run_check_proxies(message):
+    global checking_status
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # جمع جميع البروكسيات من المصادر المختلفة
+    all_proxies = []
+    general = load_proxies()
+    premium = load_premium_proxies()
+    # بروكسيات المستخدمين (لن نفحصها هنا، فقط العامة والمدفوعة)
+    for p in general:
+        all_proxies.append(("عام", p))
+    for p in premium:
+        all_proxies.append(("مدفوع", p))
+
+    if not all_proxies:
+        bot.send_message(chat_id, "📭 لا يوجد بروكسيات لفحصها.")
         return
-    bot.reply_to(message, "🔍 جاري فحص البروكسيات... قد يستغرق هذا دقيقة.")
-    working = []
+
+    checking_status["running"] = True
+    checking_status["stop"] = False
+    bot.send_message(chat_id, f"🔍 جاري فحص {len(all_proxies)} بروكسي... (باستخدام 30 خيطاً متوازياً)")
+
+    working_general = []
+    working_premium = []
     dead = []
-    total = len(proxies)
-    for i, p in enumerate(proxies, 1):
+
+    def test_proxy(proxy_data):
+        if checking_status.get("stop", False):
+            return None
+        ptype, proxy = proxy_data
         try:
             test_params = {"referred_user_id": "9999999", "ref_code": "4094894"}
             test_headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
-            test_proxies = {"http": p, "https": p}
+            test_proxies = {"http": proxy, "https": proxy}
             response = requests.get(
                 BASE_URL,
                 params=test_params,
                 headers=test_headers,
                 proxies=test_proxies,
-                timeout=10
+                timeout=3
             )
             if response.status_code == 200:
-                working.append(p)
-                bot.send_message(message.chat.id, f"✅ {p} صالح")
+                return (ptype, proxy, True)
             else:
-                dead.append(p)
-        except Exception:
-            dead.append(p)
-        time.sleep(0.5)
-    
-    # إضافة الصالحة إلى القائمة الحالية (بدون تكرار)
-    current = load_proxies()
-    current_set = set(current)
-    added = 0
-    for p in working:
-        if p not in current_set:
-            current.append(p)
-            current_set.add(p)
-            added += 1
-    save_proxies(current)
-    
-    # حفظ التالفة (دمج مع الموجودة)
+                return (ptype, proxy, False)
+        except:
+            return (ptype, proxy, False)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        results = executor.map(test_proxy, all_proxies)
+
+    for result in results:
+        if result is None:
+            continue
+        ptype, proxy, is_working = result
+        if is_working:
+            if ptype == "عام":
+                working_general.append(proxy)
+            else:
+                working_premium.append(proxy)
+            bot.send_message(chat_id, f"✅ {proxy} صالح")
+        else:
+            dead.append(proxy)
+
+    # تحديث القوائم
+    current_general = load_proxies()
+    current_general_set = set(current_general)
+    added_general = 0
+    for p in working_general:
+        if p not in current_general_set:
+            current_general.append(p)
+            current_general_set.add(p)
+            added_general += 1
+    save_proxies(current_general)
+
+    current_premium = load_premium_proxies()
+    current_premium_set = set(current_premium)
+    added_premium = 0
+    for p in working_premium:
+        if p not in current_premium_set:
+            current_premium.append(p)
+            current_premium_set.add(p)
+            added_premium += 1
+    save_premium_proxies(current_premium)
+
     existing_dead = load_dead_proxies()
     dead_set = set(existing_dead)
     for p in dead:
@@ -1494,12 +1753,20 @@ def check_proxies(message):
             existing_dead.append(p)
             dead_set.add(p)
     save_dead_proxies(existing_dead)
-    
-    bot.reply_to(message,
+
+    checking_status["running"] = False
+    bot.send_message(chat_id,
         f"✅ اكتمل الفحص.\n"
-        f"🟢 صالح ومضاف: {len(working)} (تمت إضافة {added} جديد)\n"
+        f"🟢 عام صالح ومضاف: {len(working_general)} (تمت إضافة {added_general} جديد)\n"
+        f"💎 مدفوع صالح ومضاف: {len(working_premium)} (تمت إضافة {added_premium} جديد)\n"
         f"💀 تالف (تم حفظه): {len(dead)}"
     )
+
+def check_proxies(message):
+    # تشغيل الفحص في خيط منفصل
+    thread = threading.Thread(target=run_check_proxies, args=(message,))
+    thread.daemon = True
+    thread.start()
 
 # ============================================
 # 📝 دوال الخطوات النصية (متابعة)
@@ -1527,7 +1794,7 @@ def set_start_step(message, user_id):
         bot.reply_to(message, f"⚠️ خطأ: {e}")
 
 # ============================================
-# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط) - معدل
+# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط)
 # ============================================
 def get_adjust_user_id(message):
     if not is_owner(message.from_user.id):
@@ -1535,7 +1802,6 @@ def get_adjust_user_id(message):
     text = message.text.strip()
     target_id = None
     
-    # إذا كان النص يبدأ بـ @، نبحث عن المستخدم
     if text.startswith("@"):
         username = text[1:].lower()
         sessions = load_user_sessions()
@@ -1614,7 +1880,8 @@ if __name__ == "__main__":
     print(f"👤 المالك: {OWNER_ID}")
     print(f"📢 قناة التلجرام الأساسية: @{CHANNEL_TG}")
     print(f"🎬 قناة اليوتيوب: {CHANNEL_YT}")
-    print(f"🌐 بروكسيات: {len(load_proxies())}")
+    print(f"🌐 بروكسيات عامة: {len(load_proxies())}")
+    print(f"💎 بروكسيات مدفوعة: {len(load_premium_proxies())}")
     print(f"💀 تالفة: {len(load_dead_proxies())}")
     extra = load_extra_channels()
     print(f"📢 قنوات إضافية: {len(extra)}")
