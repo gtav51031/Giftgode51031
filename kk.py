@@ -1,4 +1,3 @@
-
 import os
 import telebot
 import requests
@@ -225,6 +224,7 @@ def save_dead_proxies(dead_list):
         f.write("\n".join(dead_list))
 
 used_proxies = []
+used_user_proxies = []  # قائمة البروكسيات الخاصة المستخدمة في الجلسة
 
 def get_next_proxy():
     proxies = load_proxies()
@@ -239,9 +239,15 @@ def get_next_proxy():
         used_proxies.pop(0)
     return proxy
 
-def mark_proxy_dead(proxy):
+def mark_proxy_dead(proxy, is_user_proxy=False):
     if not proxy:
         return
+    if is_user_proxy:
+        # لا نحذف البروكسي الخاص من القائمة العامة، فقط نمنع استخدامه في هذه الجلسة
+        if proxy in used_user_proxies:
+            used_user_proxies.remove(proxy)
+        return
+    # للبروكسيات العامة
     proxies = load_proxies()
     if proxy in proxies:
         proxies.remove(proxy)
@@ -297,7 +303,25 @@ def get_next_user_proxy(user_id):
     proxies = load_user_proxies(user_id)
     if not proxies:
         return None
-    return random.choice(proxies)
+    # تصفية البروكسيات المستخدمة مؤخراً
+    available = [p for p in proxies if p not in used_user_proxies[-3:]]
+    if not available:
+        available = proxies
+    proxy = random.choice(available)
+    used_user_proxies.append(proxy)
+    if len(used_user_proxies) > 20:
+        used_user_proxies.pop(0)
+    return proxy
+
+def get_user_name(user_id):
+    """جلب اسم المستخدم من الجلسات"""
+    sessions = load_user_sessions()
+    user_data = sessions.get(str(user_id), {})
+    first_name = user_data.get("first_name", "مستخدم")
+    username = user_data.get("username", "")
+    if username:
+        return f"{first_name} (@{username})"
+    return first_name
 
 # ============================================
 # 🎯 دوال الإحالات (GiftCode)
@@ -589,11 +613,12 @@ def translate_reason(reason):
 # ⚔️ حلقة الهجوم (مع تدوير البروكسيات)
 # ============================================
 attack_status = {}
-stop_checking = False  # متغير للتحكم في إيقاف فحص البروكسيات
+stop_checking = False
 
 def attack_loop(user_id, chat_id):
-    global used_proxies
+    global used_proxies, used_user_proxies
     used_proxies = []
+    used_user_proxies = []  # إعادة تعيين قائمة البروكسيات الخاصة المستخدمة
 
     user_id_str = str(user_id)
     mode = get_user_mode(user_id)
@@ -617,6 +642,10 @@ def attack_loop(user_id, chat_id):
         save_user_settings(user_id, data)
 
     attack_status[user_id_str] = {"running": True, "number": current_number}
+
+    # متغيرات لتتبع البروكسي المستخدم
+    current_user_proxy = None
+    using_user_proxy = False
 
     while attack_status[user_id_str]["running"]:
         sub_ok, sub_type = check_all_subscriptions(user_id)
@@ -681,12 +710,18 @@ def attack_loop(user_id, chat_id):
         attempts += 1
         bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
 
-        # اختيار بروكسي: الأولوية للبروكسي الخاص بالمستخدم
-        user_proxy = get_next_user_proxy(user_id)
-        if user_proxy:
-            proxy = user_proxy
-            bot.send_message(chat_id, f"🌐 استخدام بروكسي خاص: {proxy}")
-        else:
+        # اختيار بروكسي: الأولوية للبروكسي الخاص بالمستخدم (محاولة واحدة فقط)
+        proxy = None
+        using_user_proxy = False
+
+        if not current_user_proxy:  # إذا لم نحاول بروكسي خاص بعد
+            current_user_proxy = get_next_user_proxy(user_id)
+            if current_user_proxy:
+                proxy = current_user_proxy
+                using_user_proxy = True
+                bot.send_message(chat_id, f"🌐 استخدام بروكسي خاص: {proxy}")
+
+        if not proxy:  # إذا لم يوجد بروكسي خاص أو فشل، نستخدم العام
             proxy = get_next_proxy()
             if proxy:
                 bot.send_message(chat_id, f"🌐 استخدام بروكسي عام: {proxy}")
@@ -701,10 +736,9 @@ def attack_loop(user_id, chat_id):
             new_points = load_user_points(user_id) - 1
             save_user_points(user_id, new_points)
             bot.send_message(chat_id, f"🎉 تم الإهداء من قبل هيمو! (+{gold} GP)\n💎 نقاطك المتبقية: {new_points}")
-            sessions = load_user_sessions()
-            user_data = sessions.get(str(user_id), {})
-            first_name = user_data.get("first_name", "مستخدم")
-            bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {first_name} -> {target} | +{gold} GP | {mode_name}")
+            # استخدام اسم المستخدم الحقيقي
+            user_name = get_user_name(user_id)
+            bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {user_name} -> {target} | +{gold} GP | {mode_name}")
 
             if mode == MODE_GIFTSHEEP:
                 daily_count += 1
@@ -719,9 +753,19 @@ def attack_loop(user_id, chat_id):
             arabic_reason = translate_reason(reason)
             if is_owner(user_id):
                 bot.send_message(OWNER_ID, f"فشل: {target} -> {arabic_reason}")
+
+            # إذا كان السبب same_ip أو proxy_dead
             if reason in ["same_ip", "proxy_dead"] and proxy:
-                mark_proxy_dead(proxy)
-                bot.send_message(chat_id, f"🗑️ تم حذف البروكسي التالف: {proxy}")
+                if using_user_proxy:
+                    # للبروكسي الخاص: نمنع استخدامه في هذه الجلسة فقط (لا نحذفه نهائياً)
+                    if proxy in used_user_proxies:
+                        used_user_proxies.remove(proxy)
+                    current_user_proxy = None  # ننسى البروكسي الخاص وننتقل إلى العام
+                    bot.send_message(chat_id, f"⏭️ تم تخطي البروكسي الخاص: {proxy}")
+                else:
+                    # للبروكسي العام: نحذفه نهائياً
+                    mark_proxy_dead(proxy, is_user_proxy=False)
+                    bot.send_message(chat_id, f"🗑️ تم حذف البروكسي التالف: {proxy}")
 
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
@@ -1055,7 +1099,7 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, get_adjust_user_id)
         return
 
-    # 8. إضافة بروكسي خاص للمستخدم (طلب إدخال البروكسي واليوزر والباسورد)
+    # 8. إضافة بروكسي خاص للمستخدم (ثلاث خطوات)
     if call.data == "add_my_proxy":
         bot.answer_callback_query(call.id, "✏️ أدخل البروكسي (IP:PORT أو user:pass@IP:PORT):")
         msg = bot.send_message(chat_id, 
@@ -1080,7 +1124,6 @@ def handle_callback(call):
         else:
             text = "📋 **بروكسياتك الخاصة:**\n\n"
             for i, p in enumerate(proxies, 1):
-                # إخفاء الباسورد إذا وجد
                 if '@' in p:
                     parts = p.replace('http://', '').split('@')
                     if len(parts) == 2:
@@ -1574,16 +1617,14 @@ def add_proxy_step(message):
 # ============================================
 # 📝 دوال إضافة بروكسي خاص (ثلاث خطوات)
 # ============================================
-user_proxy_data = {}  # تخزين مؤقت لبيانات البروكسي أثناء الإدخال
+user_proxy_data = {}
 
 def add_my_proxy_step1(message, user_id):
-    """الخطوة 1: استلام البروكسي (IP:PORT أو user:pass@IP:PORT)"""
     proxy = message.text.strip()
     if not proxy:
         bot.reply_to(message, "❌ لم ترسل أي بروكسي!")
         return
 
-    # تنظيف البروكسي من أي نصوص إضافية
     proxy_pattern = re.compile(r'((?:[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})')
     match = proxy_pattern.search(proxy)
     if not match:
@@ -1593,36 +1634,28 @@ def add_my_proxy_step1(message, user_id):
     clean_proxy = match.group(1)
     user_proxy_data[user_id] = {"proxy": clean_proxy}
 
-    # إذا كان البروكسي يحتوي على @ فهو مدفوع (user:pass@IP:PORT)
     if '@' in clean_proxy:
-        # استخراج user:pass من الجزء الأول
         parts = clean_proxy.split('@')
         if len(parts) == 2:
             user_pass = parts[0]
             ip_port = parts[1]
             user_proxy_data[user_id]["ip_port"] = ip_port
-            # إذا كان user:pass يحتوي على : نقسمه
             if ':' in user_pass:
                 up = user_pass.split(':', 1)
                 user_proxy_data[user_id]["username"] = up[0]
                 user_proxy_data[user_id]["password"] = up[1] if len(up) > 1 else ""
-                # حفظ البروكسي مباشرة
                 proxy_with_auth = f"http://{user_pass}@{ip_port}"
                 add_user_proxy(user_id, proxy_with_auth)
                 count = len(load_user_proxies(user_id))
                 bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{proxy_with_auth}`\n📋 عدد بروكسياتك: {count}")
-                # تنظيف البيانات المؤقتة
                 if user_id in user_proxy_data:
                     del user_proxy_data[user_id]
                 return
     else:
-        # بروكسي عادي بدون يوزر وباسورد، نطلبهما اختيارياً
         bot.reply_to(message, "📌 أدخل اسم المستخدم (إذا كان مطلوباً، وإلا اكتب `-` للتخطي):")
         bot.register_next_step_handler(message, add_my_proxy_step2, user_id)
-        return
 
 def add_my_proxy_step2(message, user_id):
-    """الخطوة 2: استلام اسم المستخدم (اختياري)"""
     username = message.text.strip()
     if username == "-":
         username = ""
@@ -1631,7 +1664,6 @@ def add_my_proxy_step2(message, user_id):
     bot.register_next_step_handler(message, add_my_proxy_step3, user_id)
 
 def add_my_proxy_step3(message, user_id):
-    """الخطوة 3: استلام كلمة المرور (اختياري) وحفظ البروكسي"""
     password = message.text.strip()
     if password == "-":
         password = ""
@@ -1641,9 +1673,7 @@ def add_my_proxy_step3(message, user_id):
     username = data.get("username", "")
     final_proxy = proxy
 
-    # إذا كان هناك username أو password نضيفهم
     if username or password:
-        # استخراج IP:PORT من البروكسي (بدون @)
         if '@' in proxy:
             ip_port = proxy.split('@')[1]
         else:
@@ -1653,10 +1683,8 @@ def add_my_proxy_step3(message, user_id):
         elif username:
             final_proxy = f"http://{username}@{ip_port}"
         elif password:
-            # نادراً ما يكون باسورد بدون يوزر، لكن نتعامل معه
             final_proxy = f"http://:{password}@{ip_port}"
     else:
-        # بروكسي عادي
         if not final_proxy.startswith("http://") and not final_proxy.startswith("https://"):
             final_proxy = f"http://{final_proxy}"
 
@@ -1667,7 +1695,6 @@ def add_my_proxy_step3(message, user_id):
     else:
         bot.reply_to(message, f"⚠️ هذا البروكسي موجود مسبقاً.")
 
-    # تنظيف البيانات المؤقتة
     if user_id in user_proxy_data:
         del user_proxy_data[user_id]
 
@@ -1774,7 +1801,6 @@ def check_proxies(message):
         else:
             dead.append(proxy)
 
-    # تحديث القوائم
     current = load_proxies()
     current_set = set(current)
     added = 0
