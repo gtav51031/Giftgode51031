@@ -5,9 +5,6 @@ import json
 import time
 import random
 import threading
-import uuid
-import re
-import concurrent.futures
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
@@ -27,34 +24,6 @@ ATTACK_DELAY = 0.1
 YOUTUBE_VERIFY_KEY = "youtube_verified"
 YOUTUBE_VERIFY_DAYS = 7
 EXTRA_CHANNELS_FILE = "extra_channels.json"
-
-# ============================================
-# إعدادات GiftSheep
-# ============================================
-GIFTSHEEP_FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
-GIFTSHEEP_REFERRAL_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
-GIFTSHEEP_DEFAULT_CODE = "W27PO5"
-GIFTSHEEP_DAILY_LIMIT = 25
-GIFTSHEEP_WAIT_SECONDS = 300  # 5 دقائق
-
-# ============================================
-# الوضعيات
-# ============================================
-MODE_GIFTCODE = "giftcode"
-MODE_GIFTSHEEP = "giftsheep"
-
-# ============================================
-# 📂 إعدادات الملفات والمجلدات
-# ============================================
-PROXIES_FILE = "proxies.txt"
-DEAD_PROXIES_FILE = "dead_proxies.txt"
-DATA_DIR = "user_data"
-
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-
-def get_user_file(user_id, filename):
-    return os.path.join(DATA_DIR, f"{filename}_{user_id}.json")
 
 # ============================================
 # 👥 المستخدمون النشطون
@@ -86,25 +55,46 @@ def format_time_ago(timestamp):
     return f"منذ {hours} ساعة"
 
 # ============================================
-# 📂 دوال البيانات
+# 📂 ملفات البيانات
+# ============================================
+PROXIES_FILE = "proxies.txt"
+DEAD_PROXIES_FILE = "dead_proxies.txt"
+PAID_PROXIES_FILE = "paid_proxies.txt"  # ملف منفصل للبروكسيات المدفوعة
+DATA_DIR = "user_data"
+
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+def get_user_file(user_id, filename):
+    return os.path.join(DATA_DIR, f"{filename}_{user_id}.json")
+
+# ============================================
+# ✅ دالة تحميل النقاط التلقائية
 # ============================================
 def load_user_points(user_id):
+    used = load_used_numbers(user_id)
+    successes = len(used.get("success", []))
+    correct_points = max(0, INITIAL_POINTS - successes)
+
     filepath = get_user_file(user_id, "points")
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
             data = json.load(f)
-            return data.get("points", INITIAL_POINTS)
+            current_points = data.get("points", INITIAL_POINTS)
+            if current_points != correct_points:
+                save_user_points(user_id, correct_points)
+            return correct_points
     else:
-        save_user_points(user_id, INITIAL_POINTS)
-        return INITIAL_POINTS
+        save_user_points(user_id, correct_points)
+        return correct_points
 
 def save_user_points(user_id, points):
     filepath = get_user_file(user_id, "points")
     with open(filepath, "w") as f:
         json.dump({"points": points}, f)
 
-def load_used_numbers(user_id, mode=MODE_GIFTCODE):
-    filepath = get_user_file(user_id, f"used_numbers_{mode}")
+def load_used_numbers(user_id):
+    filepath = get_user_file(user_id, "used_numbers")
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
             data = json.load(f)
@@ -114,8 +104,8 @@ def load_used_numbers(user_id, mode=MODE_GIFTCODE):
             return data
     return {"success": [], "failed": [], "already": []}
 
-def save_used_numbers(user_id, data, mode=MODE_GIFTCODE):
-    filepath = get_user_file(user_id, f"used_numbers_{mode}")
+def save_used_numbers(user_id, data):
+    filepath = get_user_file(user_id, "used_numbers")
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -144,62 +134,34 @@ def save_user_settings(user_id, data):
         json.dump(data, f, indent=2)
 
 # ============================================
-# دوال الوضع والإعدادات
+# 📦 دوال البروكسيات العامة + الخاصة
 # ============================================
-def get_user_mode(user_id):
-    data = load_user_settings(user_id)
-    return data.get("mode", MODE_GIFTCODE)
+BACKUP_PROXIES = [
+    "http://20.78.118.91:8561", "http://20.27.11.248:8561", "http://8.215.25.3:2080",
+]
 
-def set_user_mode(user_id, mode):
-    data = load_user_settings(user_id)
-    data["mode"] = mode
-    save_user_settings(user_id, data)
-
-def get_mode_settings(user_id):
-    mode = get_user_mode(user_id)
-    data = load_user_settings(user_id)
-    if mode == MODE_GIFTCODE:
-        return {
-            "ref_code": data.get("giftcode_ref_code", "4094894"),
-            "start_number": data.get("giftcode_start_number", 4084879),
-            "used_data": load_used_numbers(user_id, MODE_GIFTCODE)
-        }
-    else:
-        return {
-            "ref_code": data.get("giftsheep_ref_code", GIFTSHEEP_DEFAULT_CODE),
-            "start_number": 1,
-            "used_data": load_used_numbers(user_id, MODE_GIFTSHEEP),
-            "last_referral_time": data.get("giftsheep_last_referral_time", 0),
-            "daily_count": data.get("giftsheep_daily_count", 0)
-        }
-
-def set_mode_setting(user_id, key, value):
-    mode = get_user_mode(user_id)
-    data = load_user_settings(user_id)
-    if mode == MODE_GIFTCODE:
-        data[f"giftcode_{key}"] = value
-    else:
-        data[f"giftsheep_{key}"] = value
-    save_user_settings(user_id, data)
-
-def update_giftsheep_stats(user_id, success=True):
-    data = load_user_settings(user_id)
-    today = datetime.now().date().isoformat()
-    last_date = data.get("giftsheep_last_date", "")
-    if last_date != today:
-        data["giftsheep_daily_count"] = 0
-        data["giftsheep_last_date"] = today
-    if success:
-        data["giftsheep_daily_count"] = data.get("giftsheep_daily_count", 0) + 1
-        data["giftsheep_last_referral_time"] = time.time()
-    save_user_settings(user_id, data)
-
-# ============================================
-# 📦 دوال البروكسيات العامة
-# ============================================
 def load_proxies():
+    """تحميل البروكسيات العامة (مع إصلاح التنسيق)"""
     if os.path.exists(PROXIES_FILE):
         with open(PROXIES_FILE, "r") as f:
+            proxies = [p.strip() for p in f.readlines() if p.strip()]
+            formatted = []
+            for p in proxies:
+                if not p.startswith("http://") and not p.startswith("https://"):
+                    p = f"http://{p}"
+                formatted.append(p)
+            if formatted:
+                return formatted
+    return BACKUP_PROXIES.copy()
+
+def save_proxies(proxies_list):
+    with open(PROXIES_FILE, "w") as f:
+        f.write("\n".join(proxies_list))
+
+def load_paid_proxies():
+    """تحميل البروكسيات المدفوعة (الخاصة)"""
+    if os.path.exists(PAID_PROXIES_FILE):
+        with open(PAID_PROXIES_FILE, "r") as f:
             proxies = [p.strip() for p in f.readlines() if p.strip()]
             formatted = []
             for p in proxies:
@@ -209,9 +171,34 @@ def load_proxies():
             return formatted
     return []
 
-def save_proxies(proxies_list):
-    with open(PROXIES_FILE, "w") as f:
+def save_paid_proxies(proxies_list):
+    with open(PAID_PROXIES_FILE, "w") as f:
         f.write("\n".join(proxies_list))
+
+def add_paid_proxy(proxy):
+    """إضافة بروكسي مدفوع إلى القائمة الخاصة"""
+    paid = load_paid_proxies()
+    if proxy not in paid:
+        paid.append(proxy)
+        save_paid_proxies(paid)
+        return True
+    return False
+
+def remove_paid_proxy(proxy):
+    """حذف بروكسي مدفوع يدوياً"""
+    paid = load_paid_proxies()
+    if proxy in paid:
+        paid.remove(proxy)
+        save_paid_proxies(paid)
+        return True
+    return False
+
+def load_all_proxies():
+    """دمج البروكسيات العامة والخاصة (الخاصة أولاً)"""
+    normal = load_proxies()
+    paid = load_paid_proxies()
+    all_proxies = paid + [p for p in normal if p not in paid]
+    return all_proxies
 
 def load_dead_proxies():
     if os.path.exists(DEAD_PROXIES_FILE):
@@ -223,112 +210,13 @@ def save_dead_proxies(dead_list):
     with open(DEAD_PROXIES_FILE, "w") as f:
         f.write("\n".join(dead_list))
 
-used_proxies = []
-used_user_proxies = []  # قائمة البروكسيات الخاصة المستخدمة في الجلسة
-
-def get_next_proxy():
-    proxies = load_proxies()
-    if not proxies:
-        return None
-    available = [p for p in proxies if p not in used_proxies[-5:]]
-    if not available:
-        available = proxies
-    proxy = random.choice(available)
-    used_proxies.append(proxy)
-    if len(used_proxies) > 30:
-        used_proxies.pop(0)
-    return proxy
-
-def mark_proxy_dead(proxy, is_user_proxy=False):
-    if not proxy:
-        return
-    if is_user_proxy:
-        # لا نحذف البروكسي الخاص من القائمة العامة، فقط نمنع استخدامه في هذه الجلسة
-        if proxy in used_user_proxies:
-            used_user_proxies.remove(proxy)
-        return
-    # للبروكسيات العامة
-    proxies = load_proxies()
-    if proxy in proxies:
-        proxies.remove(proxy)
-        save_proxies(proxies)
-        dead = load_dead_proxies()
-        if proxy not in dead:
-            dead.append(proxy)
-            save_dead_proxies(dead)
-        if proxy in used_proxies:
-            used_proxies.remove(proxy)
-
 # ============================================
-# 📦 دوال البروكسيات الخاصة بالمستخدمين
-# ============================================
-def get_user_proxies_file(user_id):
-    return os.path.join(DATA_DIR, f"user_proxies_{user_id}.txt")
-
-def load_user_proxies(user_id):
-    filepath = get_user_proxies_file(user_id)
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            proxies = [p.strip() for p in f.readlines() if p.strip()]
-            formatted = []
-            for p in proxies:
-                if not p.startswith("http://") and not p.startswith("https://"):
-                    p = f"http://{p}"
-                formatted.append(p)
-            return formatted
-    return []
-
-def save_user_proxies(user_id, proxies_list):
-    filepath = get_user_proxies_file(user_id)
-    with open(filepath, "w") as f:
-        f.write("\n".join(proxies_list))
-
-def add_user_proxy(user_id, proxy):
-    proxies = load_user_proxies(user_id)
-    if proxy not in proxies:
-        proxies.append(proxy)
-        save_user_proxies(user_id, proxies)
-        return True
-    return False
-
-def remove_user_proxy(user_id, proxy):
-    proxies = load_user_proxies(user_id)
-    if proxy in proxies:
-        proxies.remove(proxy)
-        save_user_proxies(user_id, proxies)
-        return True
-    return False
-
-def get_next_user_proxy(user_id):
-    proxies = load_user_proxies(user_id)
-    if not proxies:
-        return None
-    # تصفية البروكسيات المستخدمة مؤخراً
-    available = [p for p in proxies if p not in used_user_proxies[-3:]]
-    if not available:
-        available = proxies
-    proxy = random.choice(available)
-    used_user_proxies.append(proxy)
-    if len(used_user_proxies) > 20:
-        used_user_proxies.pop(0)
-    return proxy
-
-def get_user_name(user_id):
-    """جلب اسم المستخدم من الجلسات"""
-    sessions = load_user_sessions()
-    user_data = sessions.get(str(user_id), {})
-    first_name = user_data.get("first_name", "مستخدم")
-    username = user_data.get("username", "")
-    if username:
-        return f"{first_name} (@{username})"
-    return first_name
-
-# ============================================
-# 🎯 دوال الإحالات (GiftCode)
+# 🎯 إعدادات الإحالات
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
+DEFAULT_START = 4084879
 
-def send_giftcode_referral(referral_code, user_id, proxy):
+def send_referral(referral_code, user_id, proxy=None):
     params = {"referred_user_id": str(user_id), "ref_code": str(referral_code)}
     headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
     proxies_dict = {"http": proxy, "https": proxy} if proxy else None
@@ -355,87 +243,6 @@ def send_giftcode_referral(referral_code, user_id, proxy):
         return {"success": False, "reason": "proxy_dead", "error": str(e)}
 
 # ============================================
-# 🐑 دوال الإحالات (GiftSheep)
-# ============================================
-def create_giftsheep_account(email, password):
-    url = "https://identitytoolkit.googleapis.com/v1/accounts:signUp"
-    params = {"key": GIFTSHEEP_FIREBASE_API_KEY}
-    payload = {"email": email, "password": password, "returnSecureToken": True}
-    try:
-        resp = requests.post(url, params=params, json=payload, timeout=30)
-        data = resp.json()
-        if resp.status_code == 200:
-            return data
-        else:
-            error_msg = data.get('error', {}).get('message', 'Unknown')
-            return {"error": error_msg}
-    except Exception as e:
-        return {"error": str(e)}
-
-def send_giftsheep_referral(access_token, ref_code):
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json; charset=utf-8',
-        'User-Agent': 'okhttp/3.12.13'
-    }
-    payload = {"data": {"code": ref_code}}
-    try:
-        resp = requests.post(GIFTSHEEP_REFERRAL_URL, json=payload, headers=headers, timeout=30)
-        try:
-            result = resp.json()
-            success = result.get('result', {}).get('success', False)
-            message = result.get('result', {}).get('message', '')
-            return success, message
-        except:
-            return False, f"Response not JSON: {resp.text[:50]}"
-    except Exception as e:
-        return False, f"Connection error: {e}"
-
-# ============================================
-# 🧠 دالة معالجة الإحالة (تدعم الوضعين)
-# ============================================
-def process_referral(user_id, target, proxy):
-    mode = get_user_mode(user_id)
-    used_data = load_used_numbers(user_id, mode)
-    ref_code = get_mode_settings(user_id)["ref_code"]
-
-    if str(target) in used_data["success"]:
-        return {"success": False, "reason": "already_used_success"}
-    if str(target) in used_data["failed"]:
-        return {"success": False, "reason": "already_used_failed"}
-    if str(target) in used_data["already"]:
-        return {"success": False, "reason": "already_used_already"}
-
-    if mode == MODE_GIFTCODE:
-        result = send_giftcode_referral(ref_code, target, proxy)
-    else:
-        email = f"test_{uuid.uuid4().hex[:8]}@mail.tm"
-        password = f"Test@{uuid.uuid4().hex[:6]}"
-        auth_data = create_giftsheep_account(email, password)
-        if not auth_data or 'error' in auth_data:
-            result = {"success": False, "reason": "account_creation_failed"}
-        else:
-            access_token = auth_data.get('idToken')
-            success, msg = send_giftsheep_referral(access_token, ref_code)
-            if success:
-                result = {"success": True, "gold": 0}
-            else:
-                result = {"success": False, "reason": msg}
-
-    if result.get("success"):
-        used_data["success"].append(str(target))
-        save_used_numbers(user_id, used_data, mode)
-        if mode == MODE_GIFTSHEEP:
-            update_giftsheep_stats(user_id, success=True)
-    elif result.get("reason") == "already_referred":
-        used_data["already"].append(str(target))
-        save_used_numbers(user_id, used_data, mode)
-    else:
-        used_data["failed"].append(str(target))
-        save_used_numbers(user_id, used_data, mode)
-    return result
-
-# ============================================
 # 🗂️ دوال القنوات الإضافية
 # ============================================
 def load_extra_channels():
@@ -460,7 +267,7 @@ def is_subscribed_extra(user_id):
     return True, None
 
 # ============================================
-# 👤 نظام الإحالة الداخلي
+# 👤 نظام الإحالة الداخلي (المُصحح)
 # ============================================
 def load_referral_data():
     filepath = os.path.join(DATA_DIR, "referral_data.json")
@@ -485,6 +292,7 @@ def process_referral_new_user(new_user_id, referrer_id):
         return False, "❌ يجب الاشتراك في قناة التلجرام أولاً!"
 
     referral_data = load_referral_data()
+
     if str(new_user_id) in referral_data.get("referred_users", {}):
         return False, "⚠️ هذا المستخدم تمت إحالته مسبقاً!"
 
@@ -512,48 +320,13 @@ def get_referral_stats(user_id):
     stats = referral_data.get("referrals", {}).get(str(user_id), {"count": 0, "points_earned": 0})
     return stats["count"], stats["points_earned"]
 
-def fix_all_referral_points():
-    referral_data = load_referral_data()
-    referrals = referral_data.get("referrals", {})
-    fixed_count = 0
-    for referrer_id_str, data in referrals.items():
-        expected_points = data["count"] * 10
-        current_earned = data.get("points_earned", 0)
-        if current_earned < expected_points:
-            diff = expected_points - current_earned
-            referral_data["referrals"][referrer_id_str]["points_earned"] = expected_points
-            uid = int(referrer_id_str)
-            current_points = load_user_points(uid)
-            save_user_points(uid, current_points + diff)
-            fixed_count += 1
-    save_referral_data(referral_data)
-    return fixed_count
-
-# ============================================
-# 🎬 إدارة ظهور رسالة اليوتيوب (مرة واحدة)
-# ============================================
-def has_youtube_prompt_shown(user_id):
-    data = load_user_settings(user_id)
-    return data.get("youtube_prompt_shown", False)
-
-def set_youtube_prompt_shown(user_id):
-    data = load_user_settings(user_id)
-    data["youtube_prompt_shown"] = True
-    save_user_settings(user_id, data)
-
-# ============================================
-# 👑 دوال المالك: التحكم في نقاط المستخدمين
-# ============================================
-def adjust_user_points(user_id, amount):
-    current = load_user_points(user_id)
-    new_points = max(0, current + amount)
-    save_user_points(user_id, new_points)
-    return current, new_points
-
 # ============================================
 # 🤖 دوال البوت الأساسية
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+proxies = load_proxies()
+paid_proxies = load_paid_proxies()
+dead_proxies = load_dead_proxies()
 
 def is_owner(user_id):
     return str(user_id) == str(OWNER_ID)
@@ -588,10 +361,21 @@ def check_all_subscriptions(user_id):
         return True, None
     if not is_subscribed_telegram(user_id):
         return False, "telegram"
+    if not is_subscribed_youtube(user_id):
+        return False, "youtube"
     extra_ok, channel = is_subscribed_extra(user_id)
     if not extra_ok:
         return False, f"extra_{channel}"
     return True, None
+
+def get_user_setting(user_id, key, default=None):
+    data = load_user_settings(user_id)
+    return data.get(key, default)
+
+def set_user_setting(user_id, key, value):
+    data = load_user_settings(user_id)
+    data[key] = value
+    save_user_settings(user_id, data)
 
 def translate_reason(reason):
     translations = {
@@ -603,55 +387,52 @@ def translate_reason(reason):
         "already_used_success": "هذا الرقم سبق أن تمت إحالته بنجاح بواسطتك",
         "already_used_failed": "هذا الرقم سبق أن فشلت محاولة إحالته (لن نعيد المحاولة)",
         "already_used_already": "هذا الرقم محال مسبقاً (مسجل في القائمة)",
-        "account_creation_failed": "فشل إنشاء حساب GiftSheep",
     }
     if reason.startswith("HTTP_"):
         return f"خطأ في الخادم (كود {reason.split('_')[1]})"
     return translations.get(reason, reason)
 
-# ============================================
-# ⚔️ حلقة الهجوم (مع تدوير البروكسيات)
-# ============================================
+def process_referral(user_id, target, proxy):
+    used_data = load_used_numbers(user_id)
+    ref_code = get_user_setting(user_id, "referral_code", "4094894")
+    if str(target) in used_data["success"]:
+        return {"success": False, "reason": "already_used_success"}
+    if str(target) in used_data["failed"]:
+        return {"success": False, "reason": "already_used_failed"}
+    if str(target) in used_data["already"]:
+        return {"success": False, "reason": "already_used_already"}
+    result = send_referral(ref_code, target, proxy)
+    if result.get("success"):
+        used_data["success"].append(str(target))
+        save_used_numbers(user_id, used_data)
+    elif result.get("reason") == "already_referred":
+        used_data["already"].append(str(target))
+        save_used_numbers(user_id, used_data)
+    else:
+        used_data["failed"].append(str(target))
+        save_used_numbers(user_id, used_data)
+    return result
+
 attack_status = {}
-stop_checking = False
 
 def attack_loop(user_id, chat_id):
-    global used_proxies, used_user_proxies
-    used_proxies = []
-    used_user_proxies = []  # إعادة تعيين قائمة البروكسيات الخاصة المستخدمة
-
+    global proxies, dead_proxies
     user_id_str = str(user_id)
-    mode = get_user_mode(user_id)
-    mode_name = "GiftSheep" if mode == MODE_GIFTSHEEP else "GiftCode"
-    settings = get_mode_settings(user_id)
-    start_number = settings["start_number"]
+    start_number = int(get_user_setting(user_id, "start_number", DEFAULT_START))
     current_number = start_number
+    proxy_index = 0
     attempts = 0
     successes = 0
-
-    last_time = settings.get("last_referral_time", 0)
-    daily_count = settings.get("daily_count", 0)
-    today = datetime.now().date().isoformat()
-    last_date = load_user_settings(user_id).get("giftsheep_last_date", "")
-
-    if last_date != today:
-        daily_count = 0
-        data = load_user_settings(user_id)
-        data["giftsheep_daily_count"] = 0
-        data["giftsheep_last_date"] = today
-        save_user_settings(user_id, data)
-
+    skipped_proxies = []  # قائمة البروكسيات المتخطية مؤقتاً (خاصة)
     attack_status[user_id_str] = {"running": True, "number": current_number}
-
-    # متغيرات لتتبع البروكسي المستخدم
-    current_user_proxy = None
-    using_user_proxy = False
-
+    
     while attack_status[user_id_str]["running"]:
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if not sub_ok:
             if sub_type == "telegram":
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة التلجرام الأساسية: @{CHANNEL_TG}")
+            elif sub_type == "youtube":
+                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة اليوتيوب: {CHANNEL_YT}")
             elif sub_type and sub_type.startswith("extra_"):
                 channel = sub_type.replace("extra_", "")
                 bot.send_message(chat_id, f"❌ يرجى الاشتراك في القناة الإضافية: @{channel}")
@@ -667,114 +448,100 @@ def attack_loop(user_id, chat_id):
             keyboard.add(btn_link)
             bot.send_message(chat_id,
                 f"⚠️ **لقد نفدت نقاطك!**\n\n"
-                f"📢 شارك رابط الإحالة الخاص بك:\n"
+                f"📢 شارك رابط الإحالة الخاص بك مع أصدقائك:\n"
                 f"`{referral_link}`\n\n"
-                f"💡 كل شخص ينضم من خلال هذا الرابط، ستحصل على 10 نقاط!",
+                f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
                 reply_markup=keyboard,
-                parse_mode=None
+                parse_mode="Markdown"
             )
             break
 
-        if mode == MODE_GIFTSHEEP:
-            current_time = time.time()
-            if daily_count >= GIFTSHEEP_DAILY_LIMIT:
-                bot.send_message(chat_id, 
-                    f"✅ **تم الوصول إلى الحد الأقصى اليومي ({GIFTSHEEP_DAILY_LIMIT} إحالات)**\n\n"
-                    f"🕒 **سيتم إعادة تعيين العداد عند منتصف الليل.**\n"
-                    f"⏰ **سيكون الوقت متاحاً غداً.**"
-                )
-                attack_status[user_id_str]["running"] = False
-                break
+        # تحميل جميع البروكسيات (مع الخاصة)
+        all_proxies = load_all_proxies()
+        if not all_proxies:
+            bot.send_message(chat_id, "❌ لا يوجد بروكسيات! تم إيقاف الهجوم.")
+            break
 
-            if last_time > 0 and (current_time - last_time) < GIFTSHEEP_WAIT_SECONDS:
-                remaining = int(GIFTSHEEP_WAIT_SECONDS - (current_time - last_time))
-                minutes = remaining // 60
-                seconds = remaining % 60
-                bot.send_message(chat_id, 
-                    f"⏳ **الانتظار قبل الإحالة التالية:**\n"
-                    f"⏱️ {minutes} دقيقة و {seconds} ثانية\n\n"
-                    f"📊 **تقدم اليوم:** {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
-                )
-                time.sleep(remaining)
+        # اختيار بروكسي (تجنب التالف والمتخطي)
+        proxy = None
+        for _ in range(len(all_proxies) * 3):
+            candidate = all_proxies[proxy_index % len(all_proxies)]
+            proxy_index += 1
+            if candidate in dead_proxies or candidate in skipped_proxies:
                 continue
+            proxy = candidate
+            break
 
-        used_data = load_used_numbers(user_id, mode)
-        all_used = set(used_data["success"] + used_data["failed"] + used_data["already"])
-        while str(current_number) in all_used:
-            current_number += 1
-        attack_status[user_id_str]["number"] = current_number
+        if not proxy:
+            # إذا نفدت البروكسيات، حاول إعادة استخدام المتخطية
+            if skipped_proxies:
+                proxy = skipped_proxies.pop(0)
+                bot.send_message(chat_id, f"🔄 إعادة استخدام بروكسي متخطي: {proxy}")
+            else:
+                bot.send_message(chat_id, "⚠️ جميع البروكسيات تالفة أو متخطية! قم بإضافة بروكسيات جديدة.")
+                break
 
         target = str(current_number)
         current_number += 1
         attack_status[user_id_str]["number"] = current_number
         attempts += 1
-        bot.send_message(chat_id, f"⏳ {mode_name} | محاولة #{attempts} على الرقم {target}...")
-
-        # اختيار بروكسي: الأولوية للبروكسي الخاص بالمستخدم (محاولة واحدة فقط)
-        proxy = None
-        using_user_proxy = False
-
-        if not current_user_proxy:  # إذا لم نحاول بروكسي خاص بعد
-            current_user_proxy = get_next_user_proxy(user_id)
-            if current_user_proxy:
-                proxy = current_user_proxy
-                using_user_proxy = True
-                bot.send_message(chat_id, f"🌐 استخدام بروكسي خاص: {proxy}")
-
-        if not proxy:  # إذا لم يوجد بروكسي خاص أو فشل، نستخدم العام
-            proxy = get_next_proxy()
-            if proxy:
-                bot.send_message(chat_id, f"🌐 استخدام بروكسي عام: {proxy}")
-            else:
-                bot.send_message(chat_id, "⚠️ لا يوجد بروكسيات صالحة، سيتم استخدام الـ IP المحلي.")
-
+        bot.send_message(chat_id, f"⏳ جاري محاولة #{attempts} على الرقم {target}...")
+        bot.send_message(chat_id, f"🌐 استخدام بروكسي: {proxy}")
+        
         result = process_referral(user_id, target, proxy)
-
+        
         if result.get("success"):
             successes += 1
             gold = result.get("gold", 0)
             new_points = load_user_points(user_id) - 1
             save_user_points(user_id, new_points)
             bot.send_message(chat_id, f"🎉 تم الإهداء من قبل هيمو! (+{gold} GP)\n💎 نقاطك المتبقية: {new_points}")
-            # استخدام اسم المستخدم الحقيقي
-            user_name = get_user_name(user_id)
-            bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {user_name} -> {target} | +{gold} GP | {mode_name}")
-
-            if mode == MODE_GIFTSHEEP:
-                daily_count += 1
-                last_time = time.time()
-                data = load_user_settings(user_id)
-                data["giftsheep_last_referral_time"] = last_time
-                data["giftsheep_daily_count"] = daily_count
-                data["giftsheep_last_date"] = datetime.now().date().isoformat()
-                save_user_settings(user_id, data)
+            sessions = load_user_sessions()
+            user_data = sessions.get(str(user_id), {})
+            first_name = user_data.get("first_name", "مستخدم")
+            bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {first_name} -> {target} | +{gold} GP")
         else:
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
-            if is_owner(user_id):
-                bot.send_message(OWNER_ID, f"فشل: {target} -> {arabic_reason}")
-
-            # إذا كان السبب same_ip أو proxy_dead
-            if reason in ["same_ip", "proxy_dead"] and proxy:
-                if using_user_proxy:
-                    # للبروكسي الخاص: نمنع استخدامه في هذه الجلسة فقط (لا نحذفه نهائياً)
-                    if proxy in used_user_proxies:
-                        used_user_proxies.remove(proxy)
-                    current_user_proxy = None  # ننسى البروكسي الخاص وننتقل إلى العام
-                    bot.send_message(chat_id, f"⏭️ تم تخطي البروكسي الخاص: {proxy}")
+            if reason in ["proxy_dead", "same_ip", "rate_limited"]:
+                bot.send_message(chat_id, f"⚠️ {arabic_reason}، ننتقل للتالي")
+                
+                # التحقق: هل هذا بروكسي مدفوع (يحتوي على @ أو موجود في قائمة المدفوعة)؟
+                is_paid = '@' in proxy if proxy else False
+                # أو التحقق من وجوده في قائمة المدفوعة
+                if not is_paid:
+                    paid_list = load_paid_proxies()
+                    is_paid = proxy in paid_list if proxy else False
+                
+                if is_paid:
+                    # بروكسي مدفوع: لا نحذفه، فقط نتخطاه مؤقتاً
+                    if proxy and proxy not in skipped_proxies:
+                        skipped_proxies.append(proxy)
+                    bot.send_message(chat_id, f"⏭️ تم تخطي البروكسي الخاص مؤقتاً: {proxy}")
                 else:
-                    # للبروكسي العام: نحذفه نهائياً
-                    mark_proxy_dead(proxy, is_user_proxy=False)
-                    bot.send_message(chat_id, f"🗑️ تم حذف البروكسي التالف: {proxy}")
-
+                    # بروكسي عادي: نحذفه نهائياً
+                    if proxy and proxy not in dead_proxies:
+                        dead_proxies.append(proxy)
+                        # حذفه من القائمة النشطة العامة
+                        if proxy in proxies:
+                            proxies.remove(proxy)
+                            save_proxies(proxies)
+                    bot.send_message(chat_id, f"🗑️ تم حذف البروكسي العادي: {proxy}")
+                
+                current_number -= 1
+                continue
+            elif reason in ["already_used_success", "already_used_failed", "already_used_already"]:
+                bot.send_message(chat_id, f"ℹ️ {arabic_reason} (تم التخطي)")
+                continue
+            else:
+                bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
         time.sleep(ATTACK_DELAY)
         if attempts % 10 == 0:
-            used = load_used_numbers(user_id, mode)
+            used = load_used_numbers(user_id)
             bot.send_message(chat_id,
-                f"📊 إحصاءات {mode_name}: {successes} نجاح من {attempts} محاولة | "
+                f"📊 إحصاءات: {successes} نجاح من {attempts} محاولة | "
                 f"آخر رقم: {target} | نجاح كلي: {len(used['success'])}"
             )
-
     attack_status[user_id_str]["running"] = False
     bot.send_message(chat_id, f"⏹️ تم إيقاف الهجوم. إجمالي النجاحات: {successes} من {attempts} محاولة.")
 
@@ -785,6 +552,7 @@ def attack_loop(user_id, chat_id):
 def start_command(message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or "مستخدم"
+
     update_user_activity(user_id)
 
     referrer_id = None
@@ -812,14 +580,14 @@ def start_command(message):
             btn_tg = InlineKeyboardButton("📢 اشترك في قناة التلجرام", url=f"https://t.me/{CHANNEL_TG}")
             btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
             btn_extra = InlineKeyboardButton("✅ اشتركت واريد تأكيد الإحالة", callback_data=f"confirm_referral_{referrer_id}")
-            keyboard.add(btn_tg, btn_yt, btn_extra)
+            keyboard.add(btn_tg, btn_yt)
+            keyboard.add(btn_extra)
             bot.reply_to(message,
                 f"👋 أهلاً {first_name}!\n\n"
                 f"🔗 تمت دعوتك بواسطة مستخدم آخر.\n"
-                f"🔒 **يجب الاشتراك في قناة التلجرام أولاً** لتأكيد الإحالة.\n"
+                f"🔒 **يجب الاشتراك في قناة التلجرام أولاً** لتأكيد الإحالة والحصول على المكافآت.\n"
                 f"بعد الاشتراك، اضغط على زر تأكيد الإحالة.",
-                reply_markup=keyboard,
-                parse_mode=None
+                reply_markup=keyboard
             )
             return
         else:
@@ -831,13 +599,20 @@ def start_command(message):
         if sub_type == "telegram":
             btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
             keyboard.add(btn_tg)
+        elif sub_type == "youtube":
+            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
+            btn_verify = InlineKeyboardButton("✅ لقد اشتركت (تأكيد)", callback_data="verify_youtube")
+            keyboard.add(btn_yt)
+            keyboard.add(btn_verify)
         elif sub_type and sub_type.startswith("extra_"):
             channel = sub_type.replace("extra_", "")
             btn_extra = InlineKeyboardButton(f"📢 اشترك في @{channel}", url=f"https://t.me/{channel}")
             keyboard.add(btn_extra)
         else:
             btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
+            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
             keyboard.add(btn_tg)
+            keyboard.add(btn_yt)
             extra_channels = load_extra_channels()
             for ch in extra_channels:
                 btn_extra = InlineKeyboardButton(f"📢 اشترك في @{ch}", url=f"https://t.me/{ch}")
@@ -850,28 +625,10 @@ def start_command(message):
             f"👋 أهلاً {first_name}!\n\n"
             f"🔒 **يجب الاشتراك في جميع القنوات المطلوبة** أولاً.\n"
             f"بعد الاشتراك، اضغط على زر التحقق.",
-            reply_markup=keyboard,
-            parse_mode=None
+            reply_markup=keyboard
         )
         return
 
-    if not has_youtube_prompt_shown(user_id):
-        keyboard_yt = InlineKeyboardMarkup()
-        btn_yt = InlineKeyboardButton("🎬 اشترك في اليوتيوب", url=CHANNEL_YT)
-        btn_verify = InlineKeyboardButton("✅ لقد اشتركت (تأكيد)", callback_data="verify_youtube_optional")
-        btn_skip = InlineKeyboardButton("⏭️ تخطي", callback_data="skip_youtube")
-        keyboard_yt.add(btn_yt, btn_verify, btn_skip)
-        bot.send_message(message.chat.id,
-            f"🎬 **قناة اليوتيوب**\n"
-            f"يمكنك دعم البوت بالاشتراك في قناتي على يوتيوب (اختياري).\n"
-            f"اضغط على الزر المناسب:",
-            reply_markup=keyboard_yt,
-            parse_mode=None
-        )
-        set_youtube_prompt_shown(user_id)
-        return
-
-    # ======== القائمة الرئيسية ========
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_set_ref = InlineKeyboardButton("🔑 تعيين كود الإحالة", callback_data="set_referral")
     btn_set_start = InlineKeyboardButton("🔢 تعيين رقم البداية", callback_data="set_start")
@@ -879,38 +636,25 @@ def start_command(message):
     btn_stop_attack = InlineKeyboardButton("⏹️ إيقاف الهجوم", callback_data="stop_attack")
     btn_status = InlineKeyboardButton("📊 الحالة", callback_data="status")
     btn_referral = InlineKeyboardButton("🔗 رابط الإحالة الخاص بي", callback_data="my_referral")
-    btn_switch_mode = InlineKeyboardButton("🔄 تبديل الوضع", callback_data="switch_mode")
-    btn_my_proxy = InlineKeyboardButton("🔑 إضافة بروكسي خاص", callback_data="add_my_proxy")
-    btn_my_proxies_list = InlineKeyboardButton("📋 عرض بروكسياتي", callback_data="my_proxies_list")
-
+    btn_my_paid_proxies = InlineKeyboardButton("📋 بروكسياتي الخاصة", callback_data="my_paid_proxies")  # للمستخدمين العاديين
     keyboard.add(btn_set_ref, btn_set_start)
     keyboard.add(btn_start_attack, btn_stop_attack)
     keyboard.add(btn_status, btn_referral)
-    keyboard.add(btn_switch_mode, btn_my_proxy)
-    keyboard.add(btn_my_proxies_list)
+    keyboard.add(btn_my_paid_proxies)
 
     if is_owner(user_id):
         btn_owner = InlineKeyboardButton("👑 أوامر المالك", callback_data="owner_commands")
         keyboard.add(btn_owner)
 
-    mode = get_user_mode(user_id)
-    mode_name = "🎁 GiftSheep" if mode == MODE_GIFTSHEEP else "💎 GiftCode"
-    settings = get_mode_settings(user_id)
-    ref_code = settings["ref_code"]
-    start_num = settings["start_number"]
+    ref_code = get_user_setting(user_id, "referral_code", "غير محدد")
+    start_num = get_user_setting(user_id, "start_number", DEFAULT_START)
     points = load_user_points(user_id)
-    used = settings["used_data"]
+    used = load_used_numbers(user_id)
     referral_count, referral_points = get_referral_stats(user_id)
-
-    extra_stats = ""
-    if mode == MODE_GIFTSHEEP:
-        daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
-        extra_stats = f"\n📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
 
     bot.reply_to(message,
         f"✅ مرحباً {first_name}!\n\n"
-        f"🔹 **الوضع الحالي:** {mode_name}\n"
-        f"📋 الإعدادات:\n"
+        f"📋 الإعدادات الحالية:\n"
         f"🔑 كود الإحالة: {ref_code}\n"
         f"🔢 رقم البداية: {start_num}\n"
         f"💎 النقاط: {points}\n"
@@ -918,10 +662,10 @@ def start_command(message):
         f"✅ نجاح: {len(used['success'])}\n"
         f"⚠️ محال: {len(used['already'])}\n"
         f"❌ فشل: {len(used['failed'])}\n"
-        f"{extra_stats}\n"
+        f"🌐 بروكسيات عامة: {len(load_proxies())}\n"
+        f"🔒 بروكسيات خاصة: {len(load_paid_proxies())}\n\n"
         f"اضغط على الزر المناسب:",
-        reply_markup=keyboard,
-        parse_mode=None
+        reply_markup=keyboard
     )
 
 @bot.message_handler(commands=['get_my_id'])
@@ -932,62 +676,58 @@ def get_my_id(message):
         f"🔑 **OWNER_ID في الكود:** `{OWNER_ID}`\n"
         f"📌 **هل هما متطابقان؟** {'✅ نعم' if str(user_id) == str(OWNER_ID) else '❌ لا'}\n\n"
         f"إذا كانا غير متطابقين، غيّر `OWNER_ID` في الكود إلى `{user_id}`.",
-        parse_mode=None
+        parse_mode="Markdown"
     )
 
 # ============================================
-# 👑 عرض أوامر المالك
+# 👑 عرض أوامر المالك (أزرار)
 # ============================================
 def show_owner_menu(message):
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_add_proxy = InlineKeyboardButton("➕ إضافة بروكسي", callback_data="owner_add_proxy")
+    btn_add_paid_proxy = InlineKeyboardButton("🔒 إضافة بروكسي خاص", callback_data="owner_add_paid_proxy")
     btn_bulk_proxy = InlineKeyboardButton("📦 إضافة بروكسيات (دفعة)", callback_data="owner_add_bulk")
     btn_refresh = InlineKeyboardButton("🔄 تحديث البروكسيات", callback_data="owner_refresh")
     btn_list = InlineKeyboardButton("📋 عرض البروكسيات", callback_data="owner_list")
-    btn_check = InlineKeyboardButton("🔍 فحص البروكسيات (مع إيقاف)", callback_data="owner_check")
+    btn_check = InlineKeyboardButton("🔍 فحص البروكسيات", callback_data="owner_check")
     btn_clear_dead = InlineKeyboardButton("🗑️ حذف التالفة", callback_data="owner_clear_dead")
-    btn_delete_proxy = InlineKeyboardButton("🗑️ حذف بروكسي (صالحة/تالفة)", callback_data="owner_delete_proxy")
-    btn_user_proxies = InlineKeyboardButton("👑 عرض بروكسيات المستخدمين", callback_data="owner_user_proxies")
-    btn_stats = InlineKeyboardButton("📊 الإحصائيات العامة", callback_data="owner_stats")
-    btn_giftsheep_stats = InlineKeyboardButton("📊 إحصائيات GiftSheep", callback_data="owner_giftsheep_stats")
+    btn_delete_paid = InlineKeyboardButton("🗑️ حذف بروكسي خاص (يدوياً)", callback_data="owner_delete_paid")
+    btn_stats = InlineKeyboardButton("📊 الإحصائيات", callback_data="owner_stats")
     btn_clear_sessions = InlineKeyboardButton("🧹 مسح الجلسات", callback_data="owner_clear_sessions")
+    btn_help = InlineKeyboardButton("❓ المساعدة", callback_data="owner_help")
     btn_add_channel = InlineKeyboardButton("➕ إضافة قناة إجبارية", callback_data="owner_add_channel")
     btn_list_channels = InlineKeyboardButton("📋 عرض القنوات الإجبارية", callback_data="owner_list_channels")
     btn_remove_channel = InlineKeyboardButton("🗑️ حذف قناة إجبارية", callback_data="owner_remove_channel")
     btn_broadcast = InlineKeyboardButton("📢 بث رسالة للجميع", callback_data="owner_broadcast")
-    btn_active_gc = InlineKeyboardButton("👥 نشطاء GiftCode", callback_data="owner_active_giftcode")
-    btn_active_gs = InlineKeyboardButton("🐑 نشطاء GiftSheep", callback_data="owner_active_giftsheep")
-    btn_referral_stats = InlineKeyboardButton("📊 إحصائيات الإحالات الداخلية", callback_data="owner_referral_stats")
+    btn_active = InlineKeyboardButton("👥 المستخدمون النشطون", callback_data="owner_active_users")
+    btn_referral_stats = InlineKeyboardButton("📊 إحصائيات الإحالات", callback_data="owner_referral_stats")
     btn_reset_points = InlineKeyboardButton("🔄 إعادة تعيين النقاط للجميع", callback_data="owner_reset_points")
-    btn_fix_points = InlineKeyboardButton("🔧 تصحيح نقاط الإحالات", callback_data="owner_fix_points")
-    btn_adjust_points = InlineKeyboardButton("⚙️ تعديل نقاط مستخدم", callback_data="owner_adjust_points")
 
-    keyboard.add(btn_add_proxy, btn_bulk_proxy)
-    keyboard.add(btn_refresh, btn_list)
-    keyboard.add(btn_check, btn_clear_dead)
-    keyboard.add(btn_delete_proxy, btn_user_proxies)
-    keyboard.add(btn_stats, btn_giftsheep_stats)
-    keyboard.add(btn_clear_sessions)
+    keyboard.add(btn_add_proxy, btn_add_paid_proxy)
+    keyboard.add(btn_bulk_proxy, btn_refresh)
+    keyboard.add(btn_list, btn_check)
+    keyboard.add(btn_clear_dead, btn_delete_paid)
+    keyboard.add(btn_stats, btn_clear_sessions)
     keyboard.add(btn_add_channel, btn_list_channels)
     keyboard.add(btn_remove_channel, btn_broadcast)
-    keyboard.add(btn_active_gc, btn_active_gs)
-    keyboard.add(btn_referral_stats)
-    keyboard.add(btn_reset_points, btn_fix_points)
-    keyboard.add(btn_adjust_points)
+    keyboard.add(btn_active, btn_referral_stats)
+    keyboard.add(btn_reset_points)
+    keyboard.add(btn_help)
 
-    bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode=None)
+    bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================
-# 🖱️ معالج الأزرار
+# 🖱️ معالجة الأزرار
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    global stop_checking
+    global proxies, dead_proxies, paid_proxies
     user_id = call.from_user.id
     chat_id = call.message.chat.id
+
     update_user_activity(user_id)
 
-    # 1. تأكيد الإحالة
+    # ========== تأكيد الإحالة بعد الاشتراك ==========
     if call.data.startswith("confirm_referral_"):
         referrer_id = int(call.data.replace("confirm_referral_", ""))
         if not is_subscribed_telegram(user_id):
@@ -1002,32 +742,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # 2. تأكيد يوتيوب اختياري
-    if call.data == "verify_youtube_optional":
-        data = load_user_settings(user_id)
-        data[YOUTUBE_VERIFY_KEY] = True
-        data["youtube_verify_date"] = datetime.now().isoformat()
-        save_user_settings(user_id, data)
-        bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك! شكراً لك.", show_alert=True)
-        start_command(call.message)
-        return
-
-    if call.data == "skip_youtube":
-        bot.answer_callback_query(call.id, "⏭️ تم تخطي اليوتيوب.", show_alert=True)
-        start_command(call.message)
-        return
-
-    # 3. تبديل الوضع
-    if call.data == "switch_mode":
-        current_mode = get_user_mode(user_id)
-        new_mode = MODE_GIFTSHEEP if current_mode == MODE_GIFTCODE else MODE_GIFTCODE
-        set_user_mode(user_id, new_mode)
-        mode_name = "🎁 GiftSheep" if new_mode == MODE_GIFTSHEEP else "💎 GiftCode"
-        bot.answer_callback_query(call.id, f"✅ تم التبديل إلى {mode_name}", show_alert=True)
-        start_command(call.message)
-        return
-
-    # 4. أوامر المالك
+    # ========== أزرار المالك ==========
     if call.data == "owner_commands":
         if not is_owner(user_id):
             bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
@@ -1036,280 +751,10 @@ def handle_callback(call):
         show_owner_menu(call.message)
         return
 
-    # 5. نشطاء GiftCode
-    if call.data == "owner_active_giftcode":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-        active_list = get_active_users()
-        if not active_list:
-            bot.reply_to(call.message, "👥 لا يوجد مستخدمون نشطون حالياً في GiftCode.")
-            return
-        text = f"👥 **المستخدمون النشطون في GiftCode** ({len(active_list)}):\n\n"
-        for uid, last_time in active_list:
-            mode = get_user_mode(uid)
-            if mode == MODE_GIFTCODE:
-                sessions = load_user_sessions()
-                user_data = sessions.get(str(uid), {})
-                name = user_data.get("first_name", "مستخدم")
-                username = user_data.get("username", "")
-                time_ago = format_time_ago(last_time)
-                if username:
-                    text += f"• {name} (@{username}) - نشط {time_ago}\n"
-                else:
-                    text += f"• {name} - نشط {time_ago}\n"
-        bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    # 6. نشطاء GiftSheep
-    if call.data == "owner_active_giftsheep":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-        active_list = get_active_users()
-        if not active_list:
-            bot.reply_to(call.message, "🐑 لا يوجد مستخدمون نشطون حالياً في GiftSheep.")
-            return
-        text = f"🐑 **المستخدمون النشطون في GiftSheep** ({len(active_list)}):\n\n"
-        for uid, last_time in active_list:
-            mode = get_user_mode(uid)
-            if mode == MODE_GIFTSHEEP:
-                sessions = load_user_sessions()
-                user_data = sessions.get(str(uid), {})
-                name = user_data.get("first_name", "مستخدم")
-                username = user_data.get("username", "")
-                daily_count = load_user_settings(uid).get("giftsheep_daily_count", 0)
-                time_ago = format_time_ago(last_time)
-                if username:
-                    text += f"• {name} (@{username}) - نشط {time_ago} | 📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT}\n"
-                else:
-                    text += f"• {name} - نشط {time_ago} | 📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT}\n"
-        bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    # 7. تعديل نقاط مستخدم
-    if call.data == "owner_adjust_points":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-        msg = bot.send_message(chat_id, 
-            "⚙️ **تعديل نقاط مستخدم**\n\n"
-            "أرسل معرف المستخدم (ID) أو اسم المستخدم (مثل @username):"
-        )
-        bot.register_next_step_handler(msg, get_adjust_user_id)
-        return
-
-    # 8. إضافة بروكسي خاص للمستخدم (ثلاث خطوات)
-    if call.data == "add_my_proxy":
-        bot.answer_callback_query(call.id, "✏️ أدخل البروكسي (IP:PORT أو user:pass@IP:PORT):")
-        msg = bot.send_message(chat_id, 
-            "🌐 **أدخل البروكسي الخاص بك**\n\n"
-            "📌 الصيغ المدعومة:\n"
-            "- عادي: `IP:PORT` (مثال: `178.104.83.44:20021`)\n"
-            "- مدفوع: `user:pass@IP:PORT` (مثال: `Gftyhf:Ggghh@178.104.83.44:20021`)\n\n"
-            "أو أدخل بيانات منفصلة:\n"
-            "أولاً: البروكسي (IP:PORT)\n"
-            "ثانياً: اليوزر (اختياري)\n"
-            "ثالثاً: الباسورد (اختياري)\n\n"
-            "إذا أردت الإدخال المنفصل، أرسل `IP:PORT` فقط الآن، وسأطلب الباقي."
-        )
-        bot.register_next_step_handler(msg, add_my_proxy_step1, user_id)
-        return
-
-    # 9. عرض بروكسيات المستخدم
-    if call.data == "my_proxies_list":
-        proxies = load_user_proxies(user_id)
-        if not proxies:
-            bot.reply_to(call.message, "📭 ليس لديك بروكسيات خاصة.")
-        else:
-            text = "📋 **بروكسياتك الخاصة:**\n\n"
-            for i, p in enumerate(proxies, 1):
-                if '@' in p:
-                    parts = p.replace('http://', '').split('@')
-                    if len(parts) == 2:
-                        user_pass = parts[0].split(':')
-                        if len(user_pass) == 2:
-                            hidden = f"{user_pass[0]}:****@{parts[1]}"
-                            text += f"{i}. `{hidden}`\n"
-                        else:
-                            text += f"{i}. `{p}`\n"
-                    else:
-                        text += f"{i}. `{p}`\n"
-                else:
-                    text += f"{i}. `{p}`\n"
-            bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    # 10. المالك: عرض بروكسيات جميع المستخدمين
-    if call.data == "owner_user_proxies":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ للمالك فقط!", show_alert=True)
-            return
-
-        user_files = [f for f in os.listdir(DATA_DIR) if f.startswith("user_proxies_") and f.endswith(".txt")]
-        if not user_files:
-            bot.reply_to(call.message, "📭 لا يوجد مستخدمون أضافوا بروكسيات.")
-            return
-
-        text = "👑 **بروكسيات المستخدمين:**\n\n"
-        sessions = load_user_sessions()
-
-        for file in user_files:
-            user_id_str = file.replace("user_proxies_", "").replace(".txt", "")
-            try:
-                uid = int(user_id_str)
-            except:
-                continue
-
-            user_data = sessions.get(user_id_str, {})
-            username = user_data.get("username", "بدون اسم")
-            first_name = user_data.get("first_name", "مستخدم")
-            proxies = load_user_proxies(uid)
-
-            if proxies:
-                text += f"👤 {first_name} (@{username}) [ID: {uid}]\n"
-                for p in proxies:
-                    text += f"   • `{p}`\n"
-            else:
-                text += f"👤 {first_name} (@{username}) - لا يوجد بروكسيات\n"
-            text += "\n"
-
-        if len(text) > 4000:
-            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-            for part in parts:
-                bot.reply_to(call.message, part, parse_mode=None)
-        else:
-            bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    # 11. زر إيقاف فحص البروكسيات
-    if call.data == "stop_checking":
-        stop_checking = True
-        bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الفحص...", show_alert=True)
-        return
-
-    # 12. باقي الأزرار
-    if call.data == "check_sub":
-        sub_ok, sub_type = check_all_subscriptions(user_id)
-        if sub_ok:
-            bot.answer_callback_query(call.id, "✅ تم التحقق! جاري فتح البوت...", show_alert=True)
-            start_command(call.message)
-        else:
-            if sub_type == "telegram":
-                bot.answer_callback_query(call.id, f"❌ اشترك في قناة التلجرام الأساسية: @{CHANNEL_TG}", show_alert=True)
-            elif sub_type and sub_type.startswith("extra_"):
-                channel = sub_type.replace("extra_", "")
-                bot.answer_callback_query(call.id, f"❌ اشترك في القناة الإضافية: @{channel}", show_alert=True)
-            else:
-                bot.answer_callback_query(call.id, "❌ اشترك في جميع القنوات المطلوبة!", show_alert=True)
-        return
-
-    if call.data == "set_referral":
-        bot.answer_callback_query(call.id, "✏️ أرسل كود الإحالة الجديد:")
-        msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة (يمكن أن يحتوي على أرقام وحروف):")
-        bot.register_next_step_handler(msg, set_referral_step, user_id)
-        return
-
-    if call.data == "set_start":
-        bot.answer_callback_query(call.id, "✏️ أرسل رقم البداية الجديد:")
-        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
-        bot.register_next_step_handler(msg, set_start_step, user_id)
-        return
-
-    if call.data == "start_attack":
-        points = load_user_points(user_id)
-        if not is_owner(user_id) and points <= 0:
-            referral_link = get_referral_link(user_id)
-            keyboard = InlineKeyboardMarkup()
-            btn_link = InlineKeyboardButton("🔗 انسخ رابط الإحالة", callback_data="my_referral")
-            keyboard.add(btn_link)
-            bot.send_message(chat_id,
-                f"⚠️ **لقد نفدت نقاطك!**\n\n"
-                f"📢 شارك رابط الإحالة الخاص بك:\n"
-                f"`{referral_link}`\n\n"
-                f"💡 كل شخص ينضم من خلال هذا الرابط، ستحصل على 10 نقاط!",
-                reply_markup=keyboard,
-                parse_mode=None
-            )
-            bot.answer_callback_query(call.id, "⚠️ نقاطك 0! شارك رابط الإحالة.", show_alert=True)
-            return
-        user_id_str = str(user_id)
-        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
-            bot.answer_callback_query(call.id, "⚠️ الهجوم يعمل بالفعل!", show_alert=True)
-            return
-        settings = get_mode_settings(user_id)
-        if not settings["ref_code"]:
-            bot.answer_callback_query(call.id, "❌ يرجى تعيين كود الإحالة أولاً!", show_alert=True)
-            return
-        bot.answer_callback_query(call.id, "▶️ بدء الهجوم...")
-        attack_status[user_id_str] = {"running": True, "number": settings["start_number"]}
-        thread = threading.Thread(target=attack_loop, args=(user_id, chat_id))
-        thread.daemon = True
-        thread.start()
-        attack_status[user_id_str]["thread"] = thread
-        bot.send_message(chat_id, "🚀 تم بدء الهجوم التلقائي! سيتم إرسال التحديثات هنا.")
-        return
-
-    if call.data == "stop_attack":
-        user_id_str = str(user_id)
-        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
-            attack_status[user_id_str]["running"] = False
-            bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الهجوم...", show_alert=True)
-            bot.send_message(chat_id, "⏹️ تم إيقاف الهجوم.")
-        else:
-            bot.answer_callback_query(call.id, "⚠️ لا يوجد هجوم نشط!", show_alert=True)
-        return
-
-    if call.data == "status":
-        mode = get_user_mode(user_id)
-        mode_name = "🎁 GiftSheep" if mode == MODE_GIFTSHEEP else "💎 GiftCode"
-        settings = get_mode_settings(user_id)
-        ref_code = settings["ref_code"]
-        start_num = settings["start_number"]
-        running = attack_status.get(str(user_id), {}).get("running", False)
-        current_num = attack_status.get(str(user_id), {}).get("number", start_num)
-        points = load_user_points(user_id)
-        used = settings["used_data"]
-        extra_stats = ""
-        if mode == MODE_GIFTSHEEP:
-            daily_count = load_user_settings(user_id).get("giftsheep_daily_count", 0)
-            extra_stats = f"\n📊 اليوم: {daily_count}/{GIFTSHEEP_DAILY_LIMIT} إحالة"
-        bot.answer_callback_query(call.id, "📊 جاري عرض الحالة...")
-        bot.send_message(chat_id,
-            f"📊 **الحالة الحالية** ({mode_name})\n\n"
-            f"🔑 كود الإحالة: {ref_code}\n"
-            f"🔢 رقم البداية: {start_num}\n"
-            f"📌 الرقم التالي: {current_num}\n"
-            f"🔄 حالة الهجوم: {'▶️ يعمل' if running else '⏹️ متوقف'}\n"
-            f"💎 النقاط: {points}\n"
-            f"✅ نجاح: {len(used['success'])}\n"
-            f"⚠️ محال: {len(used['already'])}\n"
-            f"❌ فشل: {len(used['failed'])}\n"
-            f"{extra_stats}"
-        )
-        return
-
-    if call.data == "my_referral":
-        referral_link = get_referral_link(user_id)
-        count, points = get_referral_stats(user_id)
-        text = (
-            f"🔗 **رابط الإحالة الخاص بك:**\n"
-            f"`{referral_link}`\n\n"
-            f"📌 **إحصائيات إحالاتك:**\n"
-            f"👥 عدد الإحالات: {count}\n"
-            f"💎 النقاط المكتسبة: {points}\n\n"
-            f"💡 انشر هذا الرابط لأصدقائك، كل شخص ينضم من خلال الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!"
-        )
-        bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    # ============================================
-    # الأوامر الإضافية للمالك
-    # ============================================
     if call.data == "owner_add_channel":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
-        msg = bot.send_message(chat_id, "📢 أرسل معرف القناة (مثال: mychannel):")
+        msg = bot.send_message(chat_id, "📢 أرسل معرف القناة التي تريد إضافتها (مثال: mychannel) :")
         bot.register_next_step_handler(msg, add_channel_step)
         return
 
@@ -1317,12 +762,12 @@ def handle_callback(call):
         if not is_owner(user_id): return
         channels = load_extra_channels()
         if not channels:
-            bot.reply_to(call.message, "📭 لا توجد قنوات إضافية.")
+            bot.reply_to(call.message, "📭 لا توجد قنوات إضافية حالياً.")
         else:
             text = "📋 **القنوات الإجبارية الإضافية:**\n\n"
             for i, ch in enumerate(channels, 1):
                 text += f"{i}. @{ch}\n"
-            bot.reply_to(call.message, text, parse_mode=None)
+            bot.reply_to(call.message, text, parse_mode="Markdown")
         return
 
     if call.data == "owner_remove_channel":
@@ -1360,9 +805,16 @@ def handle_callback(call):
 
     if call.data == "owner_add_proxy":
         if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي الجديد:")
-        msg = bot.send_message(chat_id, "🌐 أرسل البروكسي (مثال: 192.168.1.1:8080):")
+        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي العام الجديد:")
+        msg = bot.send_message(chat_id, "🌐 أرسل البروكسي العام (مثال: 192.168.1.1:8080):")
         bot.register_next_step_handler(msg, add_proxy_step)
+        return
+
+    if call.data == "owner_add_paid_proxy":
+        if not is_owner(user_id): return
+        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي الخاص (المدفوع):")
+        msg = bot.send_message(chat_id, "🔒 أرسل البروكسي المدفوع بصيغة `user:pass@IP:PORT` (مثال: `user:pass@192.168.1.1:8080`)")
+        bot.register_next_step_handler(msg, add_paid_proxy_step)
         return
 
     if call.data == "owner_add_bulk":
@@ -1372,16 +824,47 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, process_bulk_proxies)
         return
 
-    if call.data == "owner_list":
+    if call.data == "owner_refresh":
         if not is_owner(user_id): return
         proxies = load_proxies()
-        if not proxies:
+        paid_proxies = load_paid_proxies()
+        bot.answer_callback_query(call.id, f"✅ تم التحديث! العامة: {len(proxies)} | الخاصة: {len(paid_proxies)}", show_alert=True)
+        return
+
+    if call.data == "owner_list":
+        if not is_owner(user_id): return
+        all_proxies = load_all_proxies()
+        if not all_proxies:
             bot.reply_to(call.message, "📭 لا يوجد بروكسيات.")
             return
         text = "🌐 البروكسيات:\n\n"
-        for i, p in enumerate(proxies, 1):
-            text += f"{i}. {p}\n"
-        bot.reply_to(call.message, text)
+        # عرض الخاصة أولاً
+        paid = load_paid_proxies()
+        if paid:
+            text += "🔒 **بروكسيات خاصة:**\n"
+            for i, p in enumerate(paid, 1):
+                # إخفاء الباسورد في العرض
+                if '@' in p:
+                    parts = p.replace('http://', '').split('@')
+                    if len(parts) == 2:
+                        user_pass = parts[0].split(':')
+                        if len(user_pass) == 2:
+                            display = f"{user_pass[0]}:****@{parts[1]}"
+                            text += f"   {i}. `{display}`\n"
+                        else:
+                            text += f"   {i}. `{p}`\n"
+                    else:
+                        text += f"   {i}. `{p}`\n"
+                else:
+                    text += f"   {i}. `{p}`\n"
+            text += "\n"
+        
+        normal = load_proxies()
+        if normal:
+            text += "🌐 **بروكسيات عامة:**\n"
+            for i, p in enumerate(normal, 1):
+                text += f"   {i}. `{p}`\n"
+        bot.reply_to(call.message, text, parse_mode="Markdown")
         return
 
     if call.data == "owner_check":
@@ -1392,144 +875,229 @@ def handle_callback(call):
 
     if call.data == "owner_clear_dead":
         if not is_owner(user_id): return
-        dead_proxies = load_dead_proxies()
         if not dead_proxies:
             bot.answer_callback_query(call.id, "📭 لا يوجد بروكسيات تالفة!", show_alert=True)
             return
+        dead_proxies = []
         save_dead_proxies([])
         bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات التالفة!", show_alert=True)
         return
 
-    # حذف البروكسيات (صالحة/تالفة/الكل)
-    if call.data == "owner_delete_proxy":
-        if not is_owner(user_id): return
-        keyboard = InlineKeyboardMarkup(row_width=2)
-        keyboard.add(
-            InlineKeyboardButton("🗑️ حذف صالحة", callback_data="owner_delete_working"),
-            InlineKeyboardButton("🗑️ حذف تالفة", callback_data="owner_delete_dead"),
-            InlineKeyboardButton("🗑️ حذف الكل", callback_data="owner_delete_all")
-        )
+    # ========== حذف بروكسي خاص يدوياً (للمالك) ==========
+    if call.data == "owner_delete_paid":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+        paid = load_paid_proxies()
+        if not paid:
+            bot.reply_to(call.message, "📭 لا يوجد بروكسيات خاصة لحذفها.")
+            return
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        for p in paid:
+            # عرض مختصر
+            display = p
+            if '@' in p:
+                parts = p.replace('http://', '').split('@')
+                if len(parts) == 2:
+                    user_pass = parts[0].split(':')
+                    if len(user_pass) == 2:
+                        display = f"{user_pass[0]}:****@{parts[1]}"
+            keyboard.add(InlineKeyboardButton(f"🗑️ حذف {display}", callback_data=f"delete_paid_{p}"))
         keyboard.add(InlineKeyboardButton("🔙 رجوع", callback_data="owner_commands"))
-        bot.reply_to(call.message, "اختر نوع البروكسيات التي تريد حذفها:", reply_markup=keyboard)
+        bot.reply_to(call.message, "اختر البروكسي الخاص الذي تريد حذفه نهائياً:", reply_markup=keyboard)
         return
 
-    if call.data == "owner_delete_working":
-        if not is_owner(user_id): return
-        save_proxies([])
-        bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات الصالحة!", show_alert=True)
-        return
-
-    if call.data == "owner_delete_dead":
-        if not is_owner(user_id): return
-        save_dead_proxies([])
-        bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات التالفة!", show_alert=True)
-        return
-
-    if call.data == "owner_delete_all":
-        if not is_owner(user_id): return
-        save_proxies([])
-        save_dead_proxies([])
-        bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات!", show_alert=True)
-        return
-
-    if call.data == "owner_referral_stats":
-        if not is_owner(user_id): return
-        referral_data = load_referral_data()
-        referrals = referral_data.get("referrals", {})
-        if not referrals:
-            bot.reply_to(call.message, "📊 لا توجد إحالات حتى الآن.")
+    if call.data.startswith("delete_paid_"):
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ للمالك فقط!", show_alert=True)
             return
-        text = "📊 **إحصائيات الإحالات الداخلية**\n\n"
-        sorted_refs = sorted(referrals.items(), key=lambda x: x[1]["count"], reverse=True)
-        for ref_id_str, data in sorted_refs[:20]:
-            sessions = load_user_sessions()
-            user_data = sessions.get(ref_id_str, {})
-            name = user_data.get("first_name", "مستخدم")
-            username = user_data.get("username", "")
-            count = data["count"]
-            points_earned = data["points_earned"]
-            text += f"👤 {name} (@{username})\n"
-            text += f"   📌 إحالات: {count} | 💎 ربح: {points_earned}\n"
-            text += "   -------------------------\n"
-        bot.reply_to(call.message, text, parse_mode=None)
-        return
-
-    if call.data == "owner_fix_points":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "🔧 جاري تصحيح نقاط الإحالات...", show_alert=True)
-        fixed_count = fix_all_referral_points()
-        if fixed_count == 0:
-            bot.reply_to(call.message, "✅ جميع نقاط الإحالات محدثة بالفعل.")
+        proxy_to_delete = call.data.replace("delete_paid_", "")
+        # استعادة البروكسي الأصلي (لأنه قد يكون تم تشفيره في الزر)
+        paid = load_paid_proxies()
+        # قد يكون هناك اختلاف في التنسيق بسبب إضافة http://
+        matching_proxies = [p for p in paid if p == proxy_to_delete or p.replace('http://', '') == proxy_to_delete]
+        if matching_proxies:
+            original = matching_proxies[0]
+            paid.remove(original)
+            save_paid_proxies(paid)
+            # حذفه من القائمة النشطة أيضاً
+            if original in proxies:
+                proxies.remove(original)
+                save_proxies(proxies)
+            bot.answer_callback_query(call.id, f"✅ تم حذف البروكسي الخاص: {original}", show_alert=True)
+            bot.reply_to(call.message, f"✅ تم حذف البروكسي الخاص:\n`{original}`")
         else:
-            bot.reply_to(call.message, f"✅ تم تصحيح نقاط {fixed_count} مستخدم.")
+            bot.answer_callback_query(call.id, "⚠️ هذا البروكسي غير موجود", show_alert=True)
         return
 
-    if call.data == "owner_reset_points":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "🔄 جاري إعادة تعيين نقاط الجميع...", show_alert=True)
-        sessions = load_user_sessions()
-        if not sessions:
-            bot.reply_to(call.message, "📊 لا يوجد مستخدمون لإعادة تعيين نقاطهم.")
+    # ========== عرض بروكسيات المستخدم الخاصة ==========
+    if call.data == "my_paid_proxies":
+        # نعرض البروكسيات الخاصة بكل المستخدمين (لأن المستخدم العادي لا يملك قائمة خاصة به)
+        # لكن يمكننا عرض قائمة المدفوعة التي أضافها المالك (لأن المستخدمين لا يضيفونها)
+        # سأقوم بعرض البروكسيات الخاصة كاملة مع إخفاء الباسورد
+        paid = load_paid_proxies()
+        if not paid:
+            bot.reply_to(call.message, "📭 لا يوجد بروكسيات خاصة حالياً.")
             return
-        updated_count = 0
-        for user_id_str in sessions.keys():
-            uid = int(user_id_str)
-            save_user_points(uid, INITIAL_POINTS)
-            updated_count += 1
-        bot.reply_to(call.message, f"✅ تم إعادة تعيين نقاط {updated_count} مستخدم.")
+        text = "🔒 **البروكسيات الخاصة المتاحة:**\n\n"
+        for i, p in enumerate(paid, 1):
+            if '@' in p:
+                parts = p.replace('http://', '').split('@')
+                if len(parts) == 2:
+                    user_pass = parts[0].split(':')
+                    if len(user_pass) == 2:
+                        display = f"{user_pass[0]}:****@{parts[1]}"
+                        text += f"{i}. `{display}`\n"
+                    else:
+                        text += f"{i}. `{p}`\n"
+                else:
+                    text += f"{i}. `{p}`\n"
+            else:
+                text += f"{i}. `{p}`\n"
+        bot.reply_to(call.message, text, parse_mode="Markdown")
         return
 
+    # ========== إحصائيات عامة ==========
     if call.data == "owner_stats":
-        if not is_owner(user_id): return
-        loading_msg = bot.send_message(chat_id, "📊 **جاري تحميل الإحصائيات...**")
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+
+        loading_msg = bot.send_message(chat_id, "📊 **جاري تحميل الإحصائيات...** يرجى الانتظار.")
+
         def send_stats():
             try:
                 sessions = load_user_sessions()
                 if not sessions:
-                    bot.edit_message_text("📊 لا يوجد مستخدمون مسجلون.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
+                    bot.edit_message_text(
+                        "📊 **لا يوجد مستخدمون مسجلون حتى الآن.**\n\nقم بدعوة أصدقائك لاستخدام البوت عن طريق إرسال `/start`.",
+                        chat_id=chat_id,
+                        message_id=loading_msg.message_id,
+                        parse_mode='HTML'
+                    )
                     return
-                text = "📊 **الإحصائيات العامة**\n\n"
+
+                text = "<b>📊 الإحصائيات العامة</b>\n\n"
                 total_users = len(sessions)
                 active = 0
-                total_success_gc = 0
-                total_success_gs = 0
+                total_success = 0
                 users_data = []
+
                 for user_id_str, data in sessions.items():
                     uid = int(user_id_str)
                     sub_ok, _ = check_all_subscriptions(uid)
                     if sub_ok:
                         active += 1
+
                     username = data.get("username", "غير معروف")
                     first_name = data.get("first_name", "مستخدم")
                     points = load_user_points(uid)
-                    used_gc = load_used_numbers(uid, MODE_GIFTCODE)
-                    used_gs = load_used_numbers(uid, MODE_GIFTSHEEP)
-                    successes_gc = len(used_gc["success"])
-                    successes_gs = len(used_gs["success"])
-                    total_success_gc += successes_gc
-                    total_success_gs += successes_gs
+                    used = load_used_numbers(uid)
+                    successes = len(used["success"])
+                    total_success += successes
+
                     users_data.append({
                         "first_name": first_name,
                         "username": username,
                         "points": points,
-                        "successes_gc": successes_gc,
-                        "successes_gs": successes_gs
+                        "successes": successes
                     })
-                users_data.sort(key=lambda x: x["successes_gc"] + x["successes_gs"], reverse=True)
+
+                users_data.sort(key=lambda x: x["successes"], reverse=True)
+
                 for i, user in enumerate(users_data[:20], 1):
                     text += f"{i}. 👤 {user['first_name']} (@{user['username']})\n"
-                    text += f"   💎 النقاط: {user['points']} | ✅ GC: {user['successes_gc']} | 🐑 GS: {user['successes_gs']}\n"
+                    text += f"   💎 النقاط: {user['points']} | ✅ نجاح: {user['successes']}\n"
                     text += "   -------------------------\n"
-                text += f"\n📊 **الملخص:**\n"
+
+                if len(users_data) > 20:
+                    text += f"\n... وعرض {len(users_data) - 20} مستخدم آخر (الأقل إحالات).\n"
+
+                text += f"\n<b>📊 الملخص:</b>\n"
                 text += f"👥 إجمالي المستخدمين: {total_users}\n"
                 text += f"🟢 النشطين (مشتركين): {active}\n"
-                text += f"✅ GC نجاح: {total_success_gc}\n"
-                text += f"✅ GS نجاح: {total_success_gs}\n"
-                text += f"🌐 بروكسيات: {len(load_proxies())}\n"
-                bot.edit_message_text(text, chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
+                text += f"🔴 غير النشطين (غير مشتركين): {total_users - active}\n"
+                text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
+                text += f"🌐 بروكسيات عامة: {len(load_proxies())}\n"
+                text += f"🔒 بروكسيات خاصة: {len(load_paid_proxies())}\n"
+                text += f"💀 تالفة: {len(dead_proxies)}\n"
+                extra = load_extra_channels()
+                text += f"📢 قنوات إضافية: {len(extra)}"
+
+                if len(text) > 4000:
+                    bot.edit_message_text(
+                        text[:4000],
+                        chat_id=chat_id,
+                        message_id=loading_msg.message_id,
+                        parse_mode='HTML'
+                    )
+                    remaining = text[4000:]
+                    for i in range(0, len(remaining), 4000):
+                        bot.send_message(chat_id, remaining[i:i+4000], parse_mode='HTML')
+                else:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=chat_id,
+                        message_id=loading_msg.message_id,
+                        parse_mode='HTML'
+                    )
+
+                print(f"✅ تم إرسال الإحصائيات بنجاح. عدد المستخدمين: {total_users}")
             except Exception as e:
-                bot.edit_message_text(f"⚠️ خطأ: {str(e)[:200]}", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode=None)
+                print(f"❌ خطأ في الإحصائيات: {e}")
+                try:
+                    bot.edit_message_text(
+                        f"⚠️ حدث خطأ أثناء جمع الإحصائيات:\n{str(e)[:200]}",
+                        chat_id=chat_id,
+                        message_id=loading_msg.message_id,
+                        parse_mode='HTML'
+                    )
+                except:
+                    bot.send_message(chat_id, f"⚠️ حدث خطأ: {str(e)[:100]}")
+
         threading.Thread(target=send_stats, daemon=True).start()
+        return
+
+    # ========== ✅ المستخدمون النشطون ==========
+    if call.data == "owner_active_users":
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
+            return
+
+        active_list = get_active_users()
+
+        if not active_list:
+            bot.reply_to(call.message, "👥 **لا يوجد مستخدمون نشطون حالياً.**\n\n(النشاط يُحسب خلال آخر 5 دقائق)")
+            return
+
+        text = f"👥 **المستخدمون النشطون حالياً:** ({len(active_list)})\n\n"
+        for uid, last_time in active_list:
+            sessions = load_user_sessions()
+            user_data = sessions.get(str(uid), {})
+            name = user_data.get("first_name", "مستخدم")
+            username = user_data.get("username", "")
+            time_ago = format_time_ago(last_time)
+            if username:
+                text += f"• {name} (@{username}) - نشط {time_ago}\n"
+            else:
+                text += f"• {name} - نشط {time_ago}\n"
+
+        bot.reply_to(call.message, text, parse_mode="Markdown")
+        return
+
+    # ========== عرض رابط الإحالة الخاص بالمستخدم ==========
+    if call.data == "my_referral":
+        referral_link = get_referral_link(user_id)
+        count, points = get_referral_stats(user_id)
+        text = (
+            f"🔗 **رابط الإحالة الخاص بك:**\n"
+            f"`{referral_link}`\n\n"
+            f"📌 **إحصائيات إحالاتك:**\n"
+            f"👥 عدد الإحالات: {count}\n"
+            f"💎 النقاط المكتسبة: {points}\n\n"
+            f"💡 انشر هذا الرابط لأصدقائك، كل شخص ينضم من خلال الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!"
+        )
+        bot.reply_to(call.message, text, parse_mode="Markdown")
         return
 
     if call.data == "owner_clear_sessions":
@@ -1538,40 +1106,155 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "🧹 تم مسح جميع الجلسات!", show_alert=True)
         return
 
-    if call.data == "owner_giftsheep_stats":
+    if call.data == "owner_help":
         if not is_owner(user_id): return
-        sessions = load_user_sessions()
-        text = "📊 **إحصائيات GiftSheep**\n\n"
-        total_success = 0
-        for user_id_str in sessions.keys():
-            uid = int(user_id_str)
-            used = load_used_numbers(uid, MODE_GIFTSHEEP)
-            total_success += len(used["success"])
-        text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
-        bot.reply_to(call.message, text, parse_mode=None)
+        help_text = (
+            "👑 **أوامر المالك:**\n\n"
+            "🔹 إضافة بروكسي (زر)\n"
+            "🔹 إضافة بروكسي خاص (مدفوع) (زر)\n"
+            "🔹 إضافة بروكسيات دفعة (زر)\n"
+            "🔹 تحديث البروكسيات (زر)\n"
+            "🔹 عرض البروكسيات (زر)\n"
+            "🔹 فحص البروكسيات (زر)\n"
+            "🔹 حذف التالفة (زر)\n"
+            "🔹 حذف بروكسي خاص يدوياً (زر)\n"
+            "🔹 الإحصائيات (زر)\n"
+            "🔹 مسح الجلسات (زر)\n"
+            "🔹 إضافة قناة إجبارية (زر)\n"
+            "🔹 عرض القنوات الإجبارية (زر)\n"
+            "🔹 حذف قناة إجبارية (زر)\n"
+            "🔹 بث رسالة للجميع (زر)\n"
+            "🔹 المستخدمون النشطون (زر)\n"
+            "🔹 إحصائيات الإحالات (زر)\n"
+            "🔹 إعادة تعيين النقاط للجميع (زر)\n\n"
+            "📌 الأوامر النصية:\n"
+            "/start - القائمة الرئيسية\n"
+            "/get_my_id - معرفة رقمك"
+        )
+        bot.reply_to(call.message, help_text, parse_mode="Markdown")
         return
 
-    if call.data == "owner_refresh":
-        if not is_owner(user_id): return
-        new_proxies = load_proxies()
-        if not new_proxies:
-            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! سيتم استخدام الـ IP المحلي.", show_alert=True)
-            bot.send_message(chat_id, "✅ تم التبديل إلى الـ IP المحلي.")
+    # ========== أزرار التحقق من الاشتراك ==========
+    if call.data == "check_sub":
+        sub_ok, sub_type = check_all_subscriptions(user_id)
+        if sub_ok:
+            bot.answer_callback_query(call.id, "✅ تم التحقق! جاري فتح البوت...", show_alert=True)
+            start_command(call.message)
+        else:
+            if sub_type == "telegram":
+                bot.answer_callback_query(call.id, f"❌ اشترك في قناة التلجرام الأساسية: @{CHANNEL_TG}", show_alert=True)
+            elif sub_type == "youtube":
+                bot.answer_callback_query(call.id, "❌ اشترك في قناة اليوتيوب ثم اضغط على زر التأكيد!", show_alert=True)
+            elif sub_type and sub_type.startswith("extra_"):
+                channel = sub_type.replace("extra_", "")
+                bot.answer_callback_query(call.id, f"❌ اشترك في القناة الإضافية: @{channel}", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "❌ اشترك في جميع القنوات المطلوبة!", show_alert=True)
+        return
+
+    if call.data == "verify_youtube":
+        if is_subscribed_telegram(user_id):
+            set_user_setting(user_id, YOUTUBE_VERIFY_KEY, True)
+            set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
+            bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك في يوتيوب!", show_alert=True)
+            start_command(call.message)
+        else:
+            bot.answer_callback_query(call.id, "❌ اشترك في قناة التلجرام أولاً!", show_alert=True)
+        return
+
+    # ========== أزرار المستخدمين ==========
+    if call.data == "set_referral":
+        bot.answer_callback_query(call.id, "✏️ أرسل كود الإحالة الجديد:")
+        msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة (يمكن أن يحتوي على أرقام وحروف):")
+        bot.register_next_step_handler(msg, set_referral_step, user_id)
+        return
+
+    if call.data == "set_start":
+        bot.answer_callback_query(call.id, "✏️ أرسل رقم البداية الجديد:")
+        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
+        bot.register_next_step_handler(msg, set_start_step, user_id)
+        return
+
+    if call.data == "start_attack":
+        points = load_user_points(user_id)
+        if not is_owner(user_id) and points <= 0:
+            referral_link = get_referral_link(user_id)
+            keyboard = InlineKeyboardMarkup()
+            btn_link = InlineKeyboardButton("🔗 انسخ رابط الإحالة", callback_data="my_referral")
+            keyboard.add(btn_link)
+            bot.send_message(chat_id,
+                f"⚠️ **لقد نفدت نقاطك!**\n\n"
+                f"📢 شارك رابط الإحالة الخاص بك مع أصدقائك:\n"
+                f"`{referral_link}`\n\n"
+                f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            bot.answer_callback_query(call.id, "⚠️ نقاطك 0! شارك رابط الإحالة للحصول على نقاط جديدة.", show_alert=True)
             return
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(new_proxies)}", show_alert=True)
+
+        user_id_str = str(user_id)
+        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
+            bot.answer_callback_query(call.id, "⚠️ الهجوم يعمل بالفعل!", show_alert=True)
+            return
+        ref_code = get_user_setting(user_id, "referral_code", None)
+        if not ref_code:
+            bot.answer_callback_query(call.id, "❌ يرجى تعيين كود الإحالة أولاً!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "▶️ بدء الهجوم...")
+        attack_status[user_id_str] = {"running": True, "number": get_user_setting(user_id, "start_number", DEFAULT_START)}
+        thread = threading.Thread(target=attack_loop, args=(user_id, chat_id))
+        thread.daemon = True
+        thread.start()
+        attack_status[user_id_str]["thread"] = thread
+        bot.send_message(chat_id, "🚀 تم بدء الهجوم التلقائي! سيتم إرسال التحديثات هنا.")
+        return
+
+    if call.data == "stop_attack":
+        user_id_str = str(user_id)
+        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
+            attack_status[user_id_str]["running"] = False
+            bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الهجوم...", show_alert=True)
+            bot.send_message(chat_id, "⏹️ تم إيقاف الهجوم.")
+        else:
+            bot.answer_callback_query(call.id, "⚠️ لا يوجد هجوم نشط!", show_alert=True)
+        return
+
+    if call.data == "status":
+        user_id_str = str(user_id)
+        ref_code = get_user_setting(user_id, "referral_code", "غير محدد")
+        start_num = get_user_setting(user_id, "start_number", DEFAULT_START)
+        running = attack_status.get(user_id_str, {}).get("running", False)
+        current_num = attack_status.get(user_id_str, {}).get("number", start_num)
+        points = load_user_points(user_id)
+        used = load_used_numbers(user_id)
+        bot.answer_callback_query(call.id, "📊 جاري عرض الحالة...")
+        bot.send_message(chat_id,
+            f"📊 الحالة الحالية:\n\n"
+            f"🔑 كود الإحالة: {ref_code}\n"
+            f"🔢 رقم البداية: {start_num}\n"
+            f"📌 الرقم التالي: {current_num}\n"
+            f"🔄 حالة الهجوم: {'▶️ يعمل' if running else '⏹️ متوقف'}\n"
+            f"💎 النقاط: {points}\n"
+            f"✅ نجاح: {len(used['success'])}\n"
+            f"⚠️ محال: {len(used['already'])}\n"
+            f"❌ فشل: {len(used['failed'])}\n"
+            f"🌐 بروكسيات عامة: {len(load_proxies())}\n"
+            f"🔒 بروكسيات خاصة: {len(load_paid_proxies())}"
+        )
         return
 
     bot.answer_callback_query(call.id, "⚠️ أمر غير معروف")
 
 # ============================================
-# 📝 دوال الخطوات النصية
+# دوال الخطوات النصية
 # ============================================
 def add_channel_step(message):
     if not is_owner(message.from_user.id):
         return
     channel = message.text.strip().replace("@", "")
     if not channel:
-        bot.reply_to(message, "❌ يرجى إدخال معرف القناة.")
+        bot.reply_to(message, "❌ يرجى إدخال معرف القناة بشكل صحيح.")
         return
     channels = load_extra_channels()
     if channel in channels:
@@ -1579,7 +1262,7 @@ def add_channel_step(message):
         return
     channels.append(channel)
     save_extra_channels(channels)
-    bot.reply_to(message, f"✅ تم إضافة القناة الإجبارية: @{channel}")
+    bot.reply_to(message, f"✅ تم إضافة القناة الإجبارية: @{channel}\nسيُطلب من جميع المستخدمين الاشتراك فيها.")
 
 def broadcast_step(message):
     if not is_owner(message.from_user.id):
@@ -1590,18 +1273,18 @@ def broadcast_step(message):
         return
     sessions = load_user_sessions()
     if not sessions:
-        bot.reply_to(message, "📭 لا يوجد مستخدمون.")
+        bot.reply_to(message, "📭 لا يوجد مستخدمون لإرسال الرسالة إليهم.")
         return
-    bot.reply_to(message, f"📢 جاري الإرسال إلى {len(sessions)} مستخدم...")
+    bot.reply_to(message, f"📢 جاري إرسال الرسالة إلى {len(sessions)} مستخدم...")
     success_count = 0
     for user_id_str in sessions.keys():
         try:
-            bot.send_message(int(user_id_str), f"📢 **إعلان من المالك:**\n\n{text}", parse_mode=None)
+            bot.send_message(int(user_id_str), f"📢 **إعلان من المالك:**\n\n{text}", parse_mode="Markdown")
             success_count += 1
             time.sleep(0.1)
         except Exception as e:
             print(f"فشل إرسال إلى {user_id_str}: {e}")
-    bot.reply_to(message, f"✅ تم الإرسال إلى {success_count} من {len(sessions)} مستخدم.")
+    bot.reply_to(message, f"✅ تم إرسال الرسالة إلى {success_count} من {len(sessions)} مستخدم.")
 
 def add_proxy_step(message):
     if not is_owner(message.from_user.id):
@@ -1609,96 +1292,33 @@ def add_proxy_step(message):
     proxy = message.text.strip()
     if not proxy.startswith("http://") and not proxy.startswith("https://"):
         proxy = f"http://{proxy}"
-    proxies = load_proxies()
-    proxies.append(proxy)
-    save_proxies(proxies)
-    bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(load_proxies())}")
-
-# ============================================
-# 📝 دوال إضافة بروكسي خاص (ثلاث خطوات)
-# ============================================
-user_proxy_data = {}
-
-def add_my_proxy_step1(message, user_id):
-    proxy = message.text.strip()
-    if not proxy:
-        bot.reply_to(message, "❌ لم ترسل أي بروكسي!")
-        return
-
-    proxy_pattern = re.compile(r'((?:[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})')
-    match = proxy_pattern.search(proxy)
-    if not match:
-        bot.reply_to(message, "❌ لم أجد بروكسي صحيحاً! تأكد من الصيغة: `IP:PORT` أو `user:pass@IP:PORT`")
-        return
-
-    clean_proxy = match.group(1)
-    user_proxy_data[user_id] = {"proxy": clean_proxy}
-
-    if '@' in clean_proxy:
-        parts = clean_proxy.split('@')
-        if len(parts) == 2:
-            user_pass = parts[0]
-            ip_port = parts[1]
-            user_proxy_data[user_id]["ip_port"] = ip_port
-            if ':' in user_pass:
-                up = user_pass.split(':', 1)
-                user_proxy_data[user_id]["username"] = up[0]
-                user_proxy_data[user_id]["password"] = up[1] if len(up) > 1 else ""
-                proxy_with_auth = f"http://{user_pass}@{ip_port}"
-                add_user_proxy(user_id, proxy_with_auth)
-                count = len(load_user_proxies(user_id))
-                bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{proxy_with_auth}`\n📋 عدد بروكسياتك: {count}")
-                if user_id in user_proxy_data:
-                    del user_proxy_data[user_id]
-                return
-    else:
-        bot.reply_to(message, "📌 أدخل اسم المستخدم (إذا كان مطلوباً، وإلا اكتب `-` للتخطي):")
-        bot.register_next_step_handler(message, add_my_proxy_step2, user_id)
-
-def add_my_proxy_step2(message, user_id):
-    username = message.text.strip()
-    if username == "-":
-        username = ""
-    user_proxy_data[user_id]["username"] = username
-    bot.reply_to(message, "📌 أدخل كلمة المرور (إذا كانت مطلوبة، وإلا اكتب `-` للتخطي):")
-    bot.register_next_step_handler(message, add_my_proxy_step3, user_id)
-
-def add_my_proxy_step3(message, user_id):
-    password = message.text.strip()
-    if password == "-":
-        password = ""
-
-    data = user_proxy_data.get(user_id, {})
-    proxy = data.get("proxy", "")
-    username = data.get("username", "")
-    final_proxy = proxy
-
-    if username or password:
-        if '@' in proxy:
-            ip_port = proxy.split('@')[1]
-        else:
-            ip_port = proxy
-        if username and password:
-            final_proxy = f"http://{username}:{password}@{ip_port}"
-        elif username:
-            final_proxy = f"http://{username}@{ip_port}"
-        elif password:
-            final_proxy = f"http://:{password}@{ip_port}"
-    else:
-        if not final_proxy.startswith("http://") and not final_proxy.startswith("https://"):
-            final_proxy = f"http://{final_proxy}"
-
-    if add_user_proxy(user_id, final_proxy):
-        bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{final_proxy}`")
-        count = len(load_user_proxies(user_id))
-        bot.send_message(message.chat.id, f"📋 عدد بروكسياتك: {count}")
+    
+    if proxy not in proxies:
+        proxies.append(proxy)
+        save_proxies(proxies)
+        bot.reply_to(message, f"✅ تم إضافة بروكسي عام:\n`{proxy}`\n🌐 العدد الإجمالي: {len(proxies)}")
     else:
         bot.reply_to(message, f"⚠️ هذا البروكسي موجود مسبقاً.")
 
-    if user_id in user_proxy_data:
-        del user_proxy_data[user_id]
+def add_paid_proxy_step(message):
+    if not is_owner(message.from_user.id):
+        return
+    proxy = message.text.strip()
+    if not proxy.startswith("http://") and not proxy.startswith("https://"):
+        proxy = f"http://{proxy}"
+    
+    # التحقق من وجود @ (user:pass@IP:PORT)
+    if '@' not in proxy:
+        bot.reply_to(message, "❌ البروكسي الخاص يجب أن يكون بصيغة `user:pass@IP:PORT`")
+        return
+    
+    if add_paid_proxy(proxy):
+        bot.reply_to(message, f"✅ تم إضافة بروكسي خاص:\n`{proxy}`\n🔒 عدد البروكسيات الخاصة: {len(load_paid_proxies())}")
+    else:
+        bot.reply_to(message, f"⚠️ هذا البروكسي الخاص موجود مسبقاً.")
 
 def process_bulk_proxies(message):
+    global proxies
     if not is_owner(message.from_user.id):
         return
     if message.document:
@@ -1722,15 +1342,17 @@ def process_bulk_proxies(message):
         return
 
     formatted = []
-    proxy_pattern = re.compile(r'((?:[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})')
+    paid_list = []
     for p in proxies_list:
-        match = proxy_pattern.search(p)
-        if match:
-            p = match.group(1)
         if not p.startswith("http://") and not p.startswith("https://"):
             p = f"http://{p}"
-        formatted.append(p)
+        # إذا كان يحتوي على @ فهو بروكسي خاص
+        if '@' in p:
+            paid_list.append(p)
+        else:
+            formatted.append(p)
 
+    # إضافة العامة
     current = load_proxies()
     current_set = set(current)
     added = 0
@@ -1740,102 +1362,93 @@ def process_bulk_proxies(message):
             current_set.add(p)
             added += 1
     save_proxies(current)
+    proxies = current
+
+    # إضافة الخاصة
+    current_paid = load_paid_proxies()
+    current_paid_set = set(current_paid)
+    added_paid = 0
+    for p in paid_list:
+        if p not in current_paid_set:
+            current_paid.append(p)
+            current_paid_set.add(p)
+            added_paid += 1
+    save_paid_proxies(current_paid)
+
     bot.reply_to(message,
-        f"✅ تم إضافة {added} بروكسي جديد.\n"
-        f"🌐 العدد الإجمالي: {len(load_proxies())} بروكسي."
+        f"✅ تم إضافة {added} بروكسي عام جديد.\n"
+        f"🔒 تم إضافة {added_paid} بروكسي خاص جديد.\n"
+        f"🌐 العدد الإجمالي عامة: {len(current)} | خاصة: {len(current_paid)}"
     )
 
-# ============================================
-# 🔍 فحص البروكسيات (معدل - مع إمكانية الإيقاف والتوازي)
-# ============================================
 def check_proxies(message):
-    global stop_checking
-    stop_checking = False
-
-    proxies = load_proxies()
-    if not proxies:
+    global proxies, dead_proxies
+    all_proxies = load_all_proxies()
+    if not all_proxies:
         bot.reply_to(message, "📭 لا يوجد بروكسيات لفحصها.")
         return
 
-    stop_keyboard = InlineKeyboardMarkup()
-    stop_keyboard.add(InlineKeyboardButton("⏹️ إيقاف الفحص", callback_data="stop_checking"))
-
-    bot.reply_to(message,
-        f"🔍 جاري فحص {len(proxies)} بروكسي... (باستخدام 30 خيطاً متوازياً)\n"
-        f"⏱️ اضغط زر الإيقاف إذا أردت إنهاء الفحص.",
-        reply_markup=stop_keyboard
-    )
+    bot.reply_to(message, f"🔍 جاري فحص {len(all_proxies)} بروكسي... قد يستغرق هذا دقيقة.")
 
     working = []
     dead = []
+    total = len(all_proxies)
 
-    def test_proxy(proxy):
-        if stop_checking:
-            return (proxy, None)
+    for i, p in enumerate(all_proxies, 1):
+        bot.send_message(message.chat.id, f"⏳ اختبار {i}/{total}: {p}")
         try:
             test_params = {"referred_user_id": "9999999", "ref_code": "4094894"}
             test_headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
-            test_proxies = {"http": proxy, "https": proxy}
+            test_proxies = {"http": p, "https": p}
+
             response = requests.get(
                 BASE_URL,
                 params=test_params,
                 headers=test_headers,
                 proxies=test_proxies,
-                timeout=3
+                timeout=10
             )
-            return (proxy, response.status_code == 200)
-        except:
-            return (proxy, False)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        results = executor.map(test_proxy, proxies)
+            if response.status_code == 200:
+                working.append(p)
+                bot.send_message(message.chat.id, f"   ✅ صالح (استجابة {response.status_code})")
+            else:
+                dead.append(p)
+                bot.send_message(message.chat.id, f"   ❌ تالف (كود {response.status_code})")
 
-    for proxy, is_working in results:
-        if stop_checking:
-            break
-        if is_working is None:
-            continue
-        if is_working:
-            working.append(proxy)
-            bot.send_message(message.chat.id, f"✅ {proxy} صالح")
-        else:
-            dead.append(proxy)
+        except requests.exceptions.Timeout:
+            dead.append(p)
+            bot.send_message(message.chat.id, f"   ⏰ تالف (انتهت المهلة)")
+        except Exception as e:
+            dead.append(p)
+            bot.send_message(message.chat.id, f"   💀 تالف (خطأ: {str(e)[:30]})")
 
-    current = load_proxies()
-    current_set = set(current)
-    added = 0
-    for p in working:
-        if p not in current_set:
-            current.append(p)
-            current_set.add(p)
-            added += 1
-    save_proxies(current)
+        time.sleep(0.5)
 
-    existing_dead = load_dead_proxies()
-    dead_set = set(existing_dead)
-    for p in dead:
-        if p not in dead_set:
-            existing_dead.append(p)
-            dead_set.add(p)
-    save_dead_proxies(existing_dead)
+    # تحديث القوائم
+    save_proxies(working)
+    save_dead_proxies(dead)
+    proxies = working
+    dead_proxies = dead
 
-    status = "⏹️ تم الإيقاف" if stop_checking else "✅ اكتمل"
-    bot.send_message(message.chat.id,
-        f"{status} الفحص.\n"
-        f"🟢 صالح ومضاف: {len(working)} (تمت إضافة {added} جديد)\n"
-        f"💀 تالف (تم حفظه): {len(dead)}"
+    # لا نحذف البروكسيات الخاصة من القائمة الخاصة حتى لو كانت تالفة
+    # بل نضيفها إلى dead_proxies لمنع استخدامها
+
+    bot.reply_to(message,
+        f"✅ فحص البروكسيات اكتمل.\n"
+        f"🟢 صالح للاستخدام: {len(working)}\n"
+        f"💀 تالف: {len(dead)}\n"
+        f"تم نقل التالفة إلى dead_proxies.txt\n\n"
+        f"💡 نصيحة: إذا كان العدد الصالح قليلاً، ابحث عن بروكسيات جديدة."
     )
 
-# ============================================
-# 📝 دوال الخطوات النصية (متابعة)
-# ============================================
 def set_referral_step(message, user_id):
     try:
         value = message.text.strip()
         if not value:
-            bot.reply_to(message, "❌ يرجى إدخال كود الإحالة.")
+            bot.reply_to(message, "❌ يرجى إدخال كود الإحالة (لا تتركه فارغاً)!")
             return
-        set_mode_setting(user_id, "ref_code", value)
+        set_user_setting(user_id, "referral_code", value)
         bot.reply_to(message, f"✅ تم تعيين كود الإحالة إلى: {value}")
     except Exception as e:
         bot.reply_to(message, f"⚠️ خطأ: {e}")
@@ -1846,58 +1459,10 @@ def set_start_step(message, user_id):
         if not value.isdigit():
             bot.reply_to(message, "❌ يرجى إدخال أرقام فقط!")
             return
-        set_mode_setting(user_id, "start_number", int(value))
+        set_user_setting(user_id, "start_number", int(value))
         bot.reply_to(message, f"✅ تم تعيين رقم البداية إلى: {value}")
     except Exception as e:
         bot.reply_to(message, f"⚠️ خطأ: {e}")
-
-# ============================================
-# ⚙️ معالج تعديل نقاط المستخدم (للمالك فقط)
-# ============================================
-def get_adjust_user_id(message):
-    if not is_owner(message.from_user.id):
-        return
-    text = message.text.strip()
-    target_id = None
-
-    if text.startswith("@"):
-        username = text[1:].lower()
-        sessions = load_user_sessions()
-        found = None
-        for uid_str, data in sessions.items():
-            if data.get("username", "").lower() == username:
-                found = int(uid_str)
-                break
-        if found:
-            target_id = found
-        else:
-            bot.reply_to(message, f"❌ لم أجد مستخدمًا باسم {text}.")
-            return
-    else:
-        try:
-            target_id = int(text)
-        except ValueError:
-            bot.reply_to(message, "❌ يرجى إدخال معرف المستخدم (ID) أو اسم المستخدم (مثل @username).")
-            return
-
-    bot.send_message(message.chat.id, f"✅ المستخدم: {target_id}\nالآن أرسل عدد النقاط (استخدم - للخصم):")
-    bot.register_next_step_handler(message, get_adjust_points_amount, target_id)
-
-def get_adjust_points_amount(message, target_id):
-    if not is_owner(message.from_user.id):
-        return
-    try:
-        amount = int(message.text.strip())
-        old_points, new_points = adjust_user_points(target_id, amount)
-        bot.reply_to(message,
-            f"✅ **تم تعديل نقاط المستخدم**\n\n"
-            f"🆔 المستخدم: `{target_id}`\n"
-            f"📊 النقاط السابقة: {old_points}\n"
-            f"➕/- التعديل: {amount}\n"
-            f"💎 النقاط الجديدة: {new_points}"
-        )
-    except ValueError:
-        bot.reply_to(message, "❌ يرجى إدخال عدد صحيح (مثل 10 أو -5).")
 
 # ============================================
 # 🖥️ خادم Flask
@@ -1934,16 +1499,15 @@ def run_flask():
 # ============================================
 if __name__ == "__main__":
     print("="*60)
-    print("🤖 بوت الإحالات المتكامل (GiftCode + GiftSheep)")
+    print("🤖 بوت الإحالات - النسخة النهائية (مع دعم البروكسيات الخاصة)")
     print(f"👤 المالك: {OWNER_ID}")
     print(f"📢 قناة التلجرام الأساسية: @{CHANNEL_TG}")
     print(f"🎬 قناة اليوتيوب: {CHANNEL_YT}")
-    print(f"🌐 بروكسيات: {len(load_proxies())}")
+    print(f"🌐 بروكسيات عامة: {len(load_proxies())}")
+    print(f"🔒 بروكسيات خاصة: {len(load_paid_proxies())}")
     print(f"💀 تالفة: {len(load_dead_proxies())}")
     extra = load_extra_channels()
     print(f"📢 قنوات إضافية: {len(extra)}")
-    print(f"🐑 حد GiftSheep اليومي: {GIFTSHEEP_DAILY_LIMIT} إحالة")
-    print(f"⏳ مدة الانتظار في GiftSheep: {GIFTSHEEP_WAIT_SECONDS} ثانية")
     print("="*60)
     print("🚀 البوت يعمل...")
 
