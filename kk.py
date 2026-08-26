@@ -440,6 +440,7 @@ def attack_loop(user_id, chat_id):
             else:
                 result = {"success": False, "reason": msg}
 
+        # معالجة النتيجة
         if result.get("success"):
             successes += 1
             gold = result.get("gold", 0)
@@ -451,10 +452,15 @@ def attack_loop(user_id, chat_id):
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
             bot.send_message(chat_id, f"⚠️ فشل: {arabic_reason}")
-
-        if attack_status[user_id_str]["running"]:
-            bot.send_message(chat_id, f"⏳ انتظار {DELAY_BETWEEN_ATTEMPTS//60} دقائق قبل المحاولة التالية...")
-            time.sleep(DELAY_BETWEEN_ATTEMPTS)
+            
+            # ✅ التعديل: التخطي السريع للأرقام الفاشلة
+            if reason in ["already_used_success", "already_used_failed", "already_used_already"]:
+                continue  # لا ننتظر، ننتقل فوراً للرقم التالي
+            elif reason in ["same_ip", "rate_limited"]:
+                bot.send_message(chat_id, f"⏳ انتظار 5 دقائق بسبب {arabic_reason}...")
+                time.sleep(DELAY_BETWEEN_ATTEMPTS)
+            else:
+                time.sleep(DELAY_BETWEEN_ATTEMPTS)
 
     attack_status[user_id_str]["running"] = False
     bot.send_message(chat_id, f"⏹️ توقف الهجوم. إجمالي النجاحات: {successes} من {attempts} محاولة.")
@@ -726,13 +732,70 @@ def handle_callback(call):
         bot.register_next_step_handler(msg, broadcast_step)
         return
 
-    # الإحصائيات العامة
+    # ✅ الإحصائيات العامة المفصلة (المعدلة)
     if call.data == "owner_stats":
-        if not is_owner(user_id): return
+        if not is_owner(user_id):
+            bot.answer_callback_query(call.id, "⛔ للمالك فقط!", show_alert=True)
+            return
+
         sessions = load_user_sessions()
-        total = len(sessions)
-        active = sum(1 for uid in sessions if check_all_subscriptions(int(uid))[0])
-        bot.reply_to(call.message, f"📊 إحصائيات عامة:\n👥 إجمالي المستخدمين: {total}\n🟢 نشط: {active}")
+        if not sessions:
+            bot.reply_to(call.message, "📭 لا يوجد مستخدمون مسجلون حتى الآن.")
+            return
+
+        # تجميع البيانات
+        users_data = []
+        total_points = 0
+        total_success = 0
+        active_count = 0
+
+        for uid_str, data in sessions.items():
+            uid = int(uid_str)
+            points = load_user_points(uid)
+            used = load_used_numbers(uid)
+            successes = len(used.get("success", []))
+            total_points += points
+            total_success += successes
+
+            sub_ok, _ = check_all_subscriptions(uid)
+            if sub_ok:
+                active_count += 1
+
+            users_data.append({
+                "id": uid,
+                "first_name": data.get("first_name", "مجهول"),
+                "username": data.get("username", ""),
+                "points": points,
+                "successes": successes,
+                "active": sub_ok
+            })
+
+        # ترتيب حسب النقاط تنازلياً
+        users_data.sort(key=lambda x: x["points"], reverse=True)
+
+        text = "📊 **الإحصائيات العامة التفصيلية**\n\n"
+        text += f"👥 **إجمالي المستخدمين:** {len(users_data)}\n"
+        text += f"🟢 **النشطاء (مشتركين):** {active_count}\n"
+        text += f"🔴 **غير النشطاء:** {len(users_data) - active_count}\n"
+        text += f"💎 **إجمالي النقاط الموزعة:** {total_points}\n"
+        text += f"✅ **إجمالي النجاحات:** {total_success}\n"
+        text += "─" * 30 + "\n\n"
+
+        for i, user in enumerate(users_data[:50], 1):
+            status = "🟢" if user["active"] else "🔴"
+            username_display = f"(@{user['username']})" if user["username"] else ""
+            text += f"{i}. {status} **{user['first_name']}** {username_display}\n"
+            text += f"   🆔 {user['id']} | 💎 {user['points']} | ✅ {user['successes']}\n\n"
+
+        if len(users_data) > 50:
+            text += f"... وعرض {len(users_data) - 50} مستخدم آخر (الأقل نقاطاً).\n"
+
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                bot.reply_to(call.message, part, parse_mode="Markdown")
+        else:
+            bot.reply_to(call.message, text, parse_mode="Markdown")
         return
 
     # إحصائيات الإحالات
@@ -756,7 +819,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
         return
 
-    # عرض المستخدمين (معدل لعرض الكل)
+    # عرض المستخدمين
     if call.data == "owner_list_users":
         if not is_owner(user_id): return
         sessions = load_user_sessions()
@@ -775,7 +838,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
         return
 
-    # تعديل النقاط (المعدل ليدعم اسم المستخدم)
+    # تعديل النقاط (يدعم اسم المستخدم أو المعرف)
     if call.data == "owner_edit_points":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل اسم المستخدم (بدون @) أو المعرف الرقمي:")
@@ -798,7 +861,7 @@ def handle_callback(call):
             "📋 عرض القنوات الإجبارية\n"
             "🗑️ حذف قناة إجبارية\n"
             "📢 بث رسالة للجميع\n"
-            "📊 إحصائيات عامة\n"
+            "📊 إحصائيات عامة (مفصلة)\n"
             "📊 إحصائيات الإحالات\n"
             "👥 عرض المستخدمين\n"
             "🔧 تعديل نقاط (باسم المستخدم أو المعرف)\n"
@@ -830,7 +893,7 @@ def show_owner_menu(message):
     bot.reply_to(message, "👑 **قائمة المالك:**", reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================
-# 📝 دوال الخطوات النصية (المعدلة)
+# 📝 دوال الخطوات النصية
 # ============================================
 def set_referral_step(message, user_id):
     set_user_setting(user_id, "referral_code", message.text.strip())
@@ -935,13 +998,31 @@ def edit_points_set_value(message, target_id):
 # 🖥️ خادم Flask
 # ============================================
 app = Flask(__name__)
+
 @app.route('/')
 def index():
     return jsonify({"status": "bot is running"}), 200
 
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"}), 200
+
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+# ============================================
+# ⏰ مهمة الإبقاء على البوت نشطاً (بديل cron-job)
+# ============================================
+def keep_alive():
+    """ترسل طلباً إلى /health كل 10 دقائق لمنع الإيقاف التلقائي من Render"""
+    while True:
+        try:
+            requests.get("https://giftgode51031.onrender.com/health", timeout=5)
+            print("✅ تم إرسال طلب keep-alive")
+        except Exception as e:
+            print(f"⚠️ فشل keep-alive: {e}")
+        time.sleep(600)  # 10 دقائق
 
 # ============================================
 # 🚀 تشغيل البوت
@@ -954,13 +1035,20 @@ if __name__ == "__main__":
     print(f"🎬 يوتيوب: {CHANNEL_YT}")
     print("="*60)
 
+    # بدء خيط Flask
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
+    # بدء خيط Keep-Alive
+    keep_alive_thread = threading.Thread(target=keep_alive)
+    keep_alive_thread.daemon = True
+    keep_alive_thread.start()
+
+    # تشغيل البوت
     while True:
         try:
             bot.polling(none_stop=True, interval=1)
         except Exception as e:
-            print(f"⚠️ خطأ: {e}")
+            print(f"⚠️ خطأ في البوت: {e}")
             time.sleep(5)
