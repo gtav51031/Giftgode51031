@@ -1,4 +1,3 @@
-
 import os
 import telebot
 import requests
@@ -164,7 +163,6 @@ def get_referral_stats(user_id):
     return stats["count"], stats["points_earned"]
 
 def get_all_referral_stats():
-    """إحصائيات الإحالات لكل المستخدمين (للمالك)"""
     referral_data = load_referral_data()
     return referral_data.get("referrals", {})
 
@@ -374,12 +372,10 @@ def attack_loop(user_id, chat_id):
 
     bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()} (بدون بروكسيات، تأخير 5 دقائق بين المحاولات)")
 
-    # جلب اسم المستخدم لإشعار المالك
     user_data = load_user_sessions().get(user_id_str, {})
     user_name = user_data.get("first_name", "مستخدم")
 
     while attack_status[user_id_str]["running"]:
-        # التحقق من الاشتراكات
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if not sub_ok:
             if sub_type == "telegram":
@@ -414,7 +410,7 @@ def attack_loop(user_id, chat_id):
             current_number += 1
             attack_status[user_id_str]["number"] = current_number
             result = process_giftcode(user_id, target)
-        else:  # giftsheep
+        else:
             random_suffix = uuid.uuid4().hex[:8]
             email = f"fb_{random_suffix}@temp-mail.org"
             auth_data = create_firebase_account(email, "Test@2026")
@@ -444,21 +440,18 @@ def attack_loop(user_id, chat_id):
             else:
                 result = {"success": False, "reason": msg}
 
-        # معالجة النتيجة
         if result.get("success"):
             successes += 1
             gold = result.get("gold", 0)
             new_points = load_user_points(user_id) - 1
             save_user_points(user_id, new_points)
             bot.send_message(chat_id, f"🎉 نجاح! (+{gold} GP)\n💎 نقاط متبقية: {new_points}")
-            # إشعار للمالك (دون علم المستخدم)
             bot.send_message(OWNER_ID, f"✅ نجاح {mode.upper()} من {user_name} (ID: {user_id}) -> +{gold} GP")
         else:
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
             bot.send_message(chat_id, f"⚠️ فشل: {arabic_reason}")
 
-        # 🔁 انتظار 5 دقائق بعد كل محاولة
         if attack_status[user_id_str]["running"]:
             bot.send_message(chat_id, f"⏳ انتظار {DELAY_BETWEEN_ATTEMPTS//60} دقائق قبل المحاولة التالية...")
             time.sleep(DELAY_BETWEEN_ATTEMPTS)
@@ -493,7 +486,6 @@ def start_command(message):
     sub_ok, sub_type = check_all_subscriptions(user_id)
     referral_data = load_referral_data()
 
-    # معالجة الإحالة الواردة
     if referrer_id and user_id_str not in referral_data.get("referred_users", {}):
         if not is_subscribed_telegram(user_id) or not is_subscribed_youtube(user_id):
             keyboard = InlineKeyboardMarkup(row_width=1)
@@ -743,7 +735,7 @@ def handle_callback(call):
         bot.reply_to(call.message, f"📊 إحصائيات عامة:\n👥 إجمالي المستخدمين: {total}\n🟢 نشط: {active}")
         return
 
-    # إحصائيات الإحالات (الطلب الجديد)
+    # إحصائيات الإحالات
     if call.data == "owner_referral_stats":
         if not is_owner(user_id): return
         referral_data = get_all_referral_stats()
@@ -752,7 +744,6 @@ def handle_callback(call):
             return
         text = "📊 **إحصائيات الإحالات لكل مستخدم:**\n\n"
         for uid, data in referral_data.items():
-            # جلب اسم المستخدم إن وجد
             sessions = load_user_sessions()
             user_info = sessions.get(uid, {})
             name = user_info.get("first_name", "مجهول")
@@ -765,30 +756,30 @@ def handle_callback(call):
         bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
         return
 
-    # عرض قائمة المستخدمين (للمالك لمعرفة المعرفات)
+    # عرض المستخدمين (معدل لعرض الكل)
     if call.data == "owner_list_users":
         if not is_owner(user_id): return
         sessions = load_user_sessions()
         if not sessions:
-            bot.reply_to(call.message, "📭 لا يوجد مستخدمون.")
+            bot.reply_to(call.message, "📭 لا يوجد مستخدمون مسجلون حتى الآن.")
             return
-        text = "👥 **قائمة المستخدمين (مع المعرفات):**\n\n"
+        text = "👥 **قائمة المستخدمين المسجلين:**\n\n"
         for uid, data in sessions.items():
             name = data.get("first_name", "مجهول")
             username = data.get("username", "")
             points = load_user_points(int(uid))
-            text += f"🆔 {uid} | {name}"
+            text += f"👤 {name}"
             if username:
                 text += f" (@{username})"
-            text += f" | 💎 {points}\n"
+            text += f" | 🆔 {uid} | 💎 {points}\n"
         bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
         return
 
-    # تعديل النقاط (المُصلح)
+    # تعديل النقاط (المعدل ليدعم اسم المستخدم)
     if call.data == "owner_edit_points":
         if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل معرف المستخدم (الرقمي):")
-        msg = bot.send_message(chat_id, "🔧 أرسل معرف المستخدم (الأرقام فقط).\nلعرض قائمة المستخدمين مع معرفاتهم، استخدم زر '👥 عرض المستخدمين'.")
+        bot.answer_callback_query(call.id, "✏️ أرسل اسم المستخدم (بدون @) أو المعرف الرقمي:")
+        msg = bot.send_message(chat_id, "🔧 أرسل **اسم المستخدم** (مثل: `Rex_0157` أو `@Rex_0157`) أو **المعرف الرقمي**.\nاستخدم زر '👥 عرض المستخدمين' لمعرفة الأسماء.")
         bot.register_next_step_handler(msg, edit_points_get_user)
         return
 
@@ -809,8 +800,8 @@ def handle_callback(call):
             "📢 بث رسالة للجميع\n"
             "📊 إحصائيات عامة\n"
             "📊 إحصائيات الإحالات\n"
-            "👥 عرض المستخدمين مع المعرفات\n"
-            "🔧 تعديل نقاط مستخدم\n"
+            "👥 عرض المستخدمين\n"
+            "🔧 تعديل نقاط (باسم المستخدم أو المعرف)\n"
             "🧹 مسح جلسات المستخدمين"
         )
         bot.reply_to(call.message, help_text, parse_mode="Markdown")
@@ -839,7 +830,7 @@ def show_owner_menu(message):
     bot.reply_to(message, "👑 **قائمة المالك:**", reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================
-# 📝 دوال الخطوات النصية (المُصلحة)
+# 📝 دوال الخطوات النصية (المعدلة)
 # ============================================
 def set_referral_step(message, user_id):
     set_user_setting(user_id, "referral_code", message.text.strip())
@@ -881,39 +872,64 @@ def broadcast_step(message):
             pass
     bot.reply_to(message, f"✅ تم الإرسال إلى {count} مستخدم.")
 
+def find_user_by_username(username):
+    """تبحث عن المستخدم الذي يطابق اسم المستخدم (بدون @) وتعرف معرفه."""
+    username = username.strip().lstrip('@').lower()
+    sessions = load_user_sessions()
+    for uid, data in sessions.items():
+        if data.get("username", "").lower() == username:
+            return int(uid), data
+    return None, None
+
 def edit_points_get_user(message):
     if not is_owner(message.from_user.id): return
-    try:
-        target = int(message.text.strip())
-        # تحقق من وجود المستخدم في الجلسات
+    user_input = message.text.strip()
+    # محاولة التعرف على المعرف الرقمي
+    if user_input.isdigit():
+        target_id = int(user_input)
         sessions = load_user_sessions()
-        if str(target) not in sessions:
-            bot.reply_to(message, f"❌ لا يوجد مستخدم بهذا المعرف: {target}.\nاستخدم زر '👥 عرض المستخدمين' لمعرفة المعرفات الصحيحة.")
+        if str(target_id) in sessions:
+            bot.reply_to(message, f"✏️ المستخدم {target_id} موجود. أرسل القيمة (موجب للإضافة، سالب للخصم):")
+            bot.register_next_step_handler(message, edit_points_set_value, target_id)
             return
-        bot.reply_to(message, f"✏️ المستخدم {target} موجود. أرسل القيمة (موجب للإضافة، سالب للخصم):")
-        bot.register_next_step_handler(message, edit_points_set_value, target)
-    except ValueError:
-        bot.reply_to(message, "❌ معرف غير صالح. أرسل أرقاماً فقط.\nاستخدم زر '👥 عرض المستخدمين' لمعرفة المعرفات الصحيحة.")
+        else:
+            bot.reply_to(message, f"❌ لا يوجد مستخدم بهذا المعرف: {target_id}.\nاستخدم اسم المستخدم بدلاً من ذلك، أو '👥 عرض المستخدمين' للتحقق.")
+            return
+    else:
+        # البحث عن طريق اسم المستخدم
+        target_id, user_data = find_user_by_username(user_input)
+        if target_id:
+            name = user_data.get("first_name", "مجهول")
+            bot.reply_to(message, f"✏️ تم العثور على {name} (ID: {target_id}). أرسل القيمة (موجب للإضافة، سالب للخصم):")
+            bot.register_next_step_handler(message, edit_points_set_value, target_id)
+            return
+        else:
+            bot.reply_to(message, f"❌ لم يتم العثور على مستخدم باسم '{user_input}'.\nتأكد من الاسم أو استخدم المعرف الرقمي.\nاستخدم '👥 عرض المستخدمين' لمعرفة الأسماء الصحيحة.")
+            return
 
-def edit_points_set_value(message, target):
+def edit_points_set_value(message, target_id):
     if not is_owner(message.from_user.id): return
     try:
         val = int(message.text.strip())
-        current = load_user_points(target)
+        current = load_user_points(target_id)
         new = max(0, current + val)
-        save_user_points(target, new)
-        # جلب اسم المستخدم
+        save_user_points(target_id, new)
         sessions = load_user_sessions()
-        user_info = sessions.get(str(target), {})
+        user_info = sessions.get(str(target_id), {})
         name = user_info.get("first_name", "مجهول")
-        bot.reply_to(message, f"✅ تم تعديل نقاط {name} (ID: {target}): {current} -> {new}")
-        # إرسال إشعار للمستخدم دون معرفة أنه تم التعديل (اختياري)
+        username = user_info.get("username", "")
+        reply_text = f"✅ تم تعديل نقاط {name}"
+        if username:
+            reply_text += f" (@{username})"
+        reply_text += f" (ID: {target_id}): {current} -> {new}"
+        bot.reply_to(message, reply_text)
+        # إرسال إشعار للمستخدم (اختياري)
         try:
-            bot.send_message(target, f"🔔 تم تحديث رصيد نقاطك.\nرصيدك الحالي: {new}")
+            bot.send_message(target_id, f"🔔 تم تحديث رصيد نقاطك.\nرصيدك الحالي: {new}")
         except:
             pass
     except ValueError:
-        bot.reply_to(message, "❌ قيمة غير صالحة. أرسل رقماً.")
+        bot.reply_to(message, "❌ قيمة غير صالحة. أرسل رقماً (موجب أو سالب).")
 
 # ============================================
 # 🖥️ خادم Flask
