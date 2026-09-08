@@ -12,7 +12,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
 
 # ============================================
-# 🔐 الإعدادات
+# 🔐 إعدادات البوت الأساسية (الثابتة)
 # ============================================
 BOT_TOKEN = "8738226982:AAFyBMXGSFXz1stdeWQfb4J-hnrW3kr7RKE"
 OWNER_ID = 6366853738
@@ -26,7 +26,6 @@ REFERRAL_POINTS = 20
 PROXIES_FILE = "proxies.txt"
 USER_PROXIES_FILE = "user_proxies.txt"
 DATA_DIR = "user_data"
-
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
@@ -106,19 +105,8 @@ def save_referral_data(data):
 def get_referral_link(user_id):
     return f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
-def load_user_data(user_id):
-    filepath = get_user_file(user_id, "gs_data")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_user_data(user_id, data):
-    with open(get_user_file(user_id, "gs_data"), "w") as f:
-        json.dump(data, f, indent=2)
-
 # ============================================
-# 🔄 البروكسيات
+# 🔄 دوال البروكسيات (ذكية)
 # ============================================
 def load_proxies():
     if not os.path.exists(PROXIES_FILE):
@@ -167,7 +155,7 @@ def get_next_proxy(banned_proxies=None):
     return None, banned_proxies
 
 # ============================================
-# 🎯 دوال GiftCode
+# 🎯 دوال وضع GiftCode فقط (منفصل تماماً)
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
 DEFAULT_START = 4084879
@@ -201,7 +189,7 @@ def send_giftcode_referral(referral_code, user_id, proxy=None):
 
 def process_giftcode(user_id, target, proxy=None):
     used_data = load_used_numbers(user_id)
-    ref_code = get_user_setting(user_id, "referral_code", "4094894")
+    ref_code = get_user_setting(user_id, "referral_code", "4094894")  # الكود الافتراضي الصحيح
     result = send_giftcode_referral(ref_code, target, proxy)
     if result.get("success"):
         used_data["success"].append(str(target))
@@ -227,7 +215,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# 🔥 دوال GiftSheep (Firebase)
+# 🔥 دوال وضع GiftSheep فقط (منفصل تماماً)
 # ============================================
 FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 REFERRAL_URL_FB = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
@@ -385,6 +373,7 @@ def attack_loop(user_id, chat_id):
         bot.send_message(chat_id, f"⏳ محاولة #{attempts}...")
 
         if mode == 'giftcode':
+            # وضع الـ GiftCode: يبدأ من رقم البداية ويزيد (+1) ويتخطى غير الصالح
             target = str(current)
             current += 1
             attack_status[uid]["number"] = current
@@ -392,7 +381,7 @@ def attack_loop(user_id, chat_id):
             if not result.get("success") and result.get("reason") in ["invalid_user", "already_referred"]:
                 continue
         else:
-            # GiftSheep تلقائي
+            # وضع الـ GiftSheep: توليد حسابات Firebase وهمية تلقائياً
             suffix = uuid.uuid4().hex[:8]
             email = f"fb_{suffix}@temp-mail.org"
             auth = create_firebase_account(email, "Test@2026")
@@ -401,7 +390,7 @@ def attack_loop(user_id, chat_id):
             token = auth.get('idToken')
             if not token:
                 continue
-            user_code = get_user_setting(user_id, "referral_code", "")
+            user_code = get_user_setting(user_id, "referral_code", "W27PO5")  # افتراضي في حال لم يضبط
             if not user_code:
                 bot.send_message(chat_id, "⚠️ أدخل كود الإحالة أولاً!")
                 break
@@ -504,7 +493,7 @@ def start_command(message):
 
     points = load_user_points(user_id)
     used = load_used_numbers(user_id)
-    code = get_user_setting(user_id, "referral_code", "غير محدد")
+    code = get_user_setting(user_id, "referral_code", "4094894")
 
     bot.reply_to(message, f"✅ مرحباً {first_name}!\n💎 نقاط: {points}\n🔑 كودك: {code}\n🔄 وضع: {mode.upper()}\n✅ نجاح: {len(used['success'])}", reply_markup=kb)
 
@@ -700,5 +689,8 @@ if __name__ == "__main__":
     while True:
         try:
             bot.polling(none_stop=True, interval=1)
-        except:
+        except Exception as e:
+            if "409" in str(e):
+                print("⚠️ خطأ 409: يوجد نسخة أخرى من البوت تعمل! أوقفها وأعد التشغيل.")
+                exit(1)
             time.sleep(5)
