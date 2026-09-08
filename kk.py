@@ -251,6 +251,9 @@ def process_giftcode(user_id, target, proxy=None):
     elif result.get("reason") == "already_referred":
         used_data["already"].append(str(target))
         save_used_numbers(user_id, used_data)
+    elif result.get("reason") == "invalid_user":
+        # لا نضيفه للقائمة لأننا سنتخطاه تلقائياً في الحلقة، ولا داعي لحفظه
+        pass
     else:
         used_data["failed"].append(str(target))
         save_used_numbers(user_id, used_data)
@@ -382,7 +385,7 @@ def attack_loop(user_id, chat_id):
     banned_proxies = set()
     attack_status[user_id_str] = {"running": True, "number": current_number}
 
-    bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()} (مع إدارة البروكسيات)")
+    bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()} (مع إدارة البروكسيات التسلسلية)")
 
     while attack_status[user_id_str]["running"]:
         points = load_user_points(user_id)
@@ -404,9 +407,13 @@ def attack_loop(user_id, chat_id):
         bot.send_message(chat_id, f"⏳ محاولة #{attempts}...")
 
         if mode == 'giftcode':
-            target = str(random.randint(4000000, 9999999))
-            attack_status[user_id_str]["number"] = target
+            # نظام التسلسل الذكي من رقم البداية
+            target = str(current_number)
+            current_number += 1
+            attack_status[user_id_str]["number"] = current_number
             result = process_giftcode(user_id, target, proxy)
+            if not result.get("success") and result.get("reason") in ["invalid_user", "already_referred"]:
+                continue  # تخطي فوري للرقم التالي
         else:
             random_suffix = uuid.uuid4().hex[:8]
             email = f"fb_{random_suffix}@temp-mail.org"
@@ -418,7 +425,6 @@ def attack_loop(user_id, chat_id):
             if not id_token:
                 continue
 
-            # استخدام كود الإحالة الخاص بالمستخدم
             user_ref_code = get_user_setting(user_id, "referral_code", "W27PO5")
             success, msg = send_firebase_referral(id_token, user_ref_code, proxy)
             if success:
@@ -603,7 +609,7 @@ def handle_callback(call):
         return
 
     if call.data == "set_start":
-        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية:")
+        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
         bot.register_next_step_handler(msg, set_start_step, user_id)
         bot.answer_callback_query(call.id)
         return
