@@ -14,7 +14,7 @@ from flask import Flask, jsonify
 # ============================================
 # 🔐 إعدادات البوت الأساسية (الثابتة)
 # ============================================
-BOT_TOKEN = "8738226982:AAFyBMXGSFXz1stdeWQfb4J-hnrW3kr7RKE"
+BOT_TOKEN = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
 OWNER_ID = 6366853738
 CHANNEL_TG = "thaish12"
 CHANNEL_YT = "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s"
