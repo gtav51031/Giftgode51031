@@ -12,7 +12,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
 
 # ============================================
-# 🔐 إعدادات البوت الأساسية (تم تحديث الروابط)
+# 🔐 إعدادات البوت الأساسية
 # ============================================
 BOT_TOKEN = "8738226982:AAFyBMXGSFXz1stdeWQfb4J-hnrW3kr7RKE"
 OWNER_ID = 6366853738
@@ -483,12 +483,9 @@ def start_command(message):
         InlineKeyboardButton("➕ إضافة بروكسي", callback_data="user_add_proxy")
     )
 
+    # ✅ تعديل: زر المالك فقط يظهر للمالك (بدون أزرار الإحصائيات وتعديل النقاط في القائمة الرئيسية)
     if is_owner(user_id):
-        kb.add(
-            InlineKeyboardButton("👑 المالك", callback_data="owner_commands"),
-            InlineKeyboardButton("📈 الإحصائيات", callback_data="owner_stats"),
-            InlineKeyboardButton("🔧 تعديل النقاط", callback_data="owner_edit_points")
-        )
+        kb.add(InlineKeyboardButton("👑 المالك", callback_data="owner_commands"))
 
     points = load_user_points(user_id)
     used = load_used_numbers(user_id)
@@ -593,7 +590,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # ========== أوامر المالك (إضافة إحصائيات وتعديل نقاط) ==========
+    # ========== أوامر المالك (تظهر فقط هنا وفي قائمة المالك) ==========
     if call.data == "owner_commands":
         if not is_owner(user_id): return
         kb = InlineKeyboardMarkup(row_width=2)
