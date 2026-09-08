@@ -12,13 +12,13 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
 
 # ============================================
-# 🔐 إعدادات البوت الأساسية (الثابتة)
+# 🔐 إعدادات البوت الأساسية (تم تحديث الروابط)
 # ============================================
-BOT_TOKEN = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
+BOT_TOKEN = "8738226982:AAFyBMXGSFXz1stdeWQfb4J-hnrW3kr7RKE"
 OWNER_ID = 6366853738
 CHANNEL_TG = "thaish12"
 CHANNEL_YT = "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s"
-BOT_USERNAME = "Giftsheep1_bot"
+BOT_USERNAME = "Rame124673_bot"  # ✅ تم التغيير إلى اليوزر المطلوب
 
 INITIAL_POINTS = 50
 REFERRAL_POINTS = 20
@@ -103,10 +103,11 @@ def save_referral_data(data):
         json.dump(data, f, indent=2)
 
 def get_referral_link(user_id):
+    # تم التعديل هنا لاستخدام اليوزر الصحيح
     return f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
 # ============================================
-# 🔄 دوال البروكسيات (ذكية)
+# 🔄 دوال البروكسيات
 # ============================================
 def load_proxies():
     if not os.path.exists(PROXIES_FILE):
@@ -155,7 +156,7 @@ def get_next_proxy(banned_proxies=None):
     return None, banned_proxies
 
 # ============================================
-# 🎯 دوال وضع GiftCode فقط (منفصل تماماً)
+# 🎯 دوال وضع GiftCode
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
 DEFAULT_START = 4084879
@@ -189,7 +190,7 @@ def send_giftcode_referral(referral_code, user_id, proxy=None):
 
 def process_giftcode(user_id, target, proxy=None):
     used_data = load_used_numbers(user_id)
-    ref_code = get_user_setting(user_id, "referral_code", "4094894")  # الكود الافتراضي الصحيح
+    ref_code = get_user_setting(user_id, "referral_code", "4094894")
     result = send_giftcode_referral(ref_code, target, proxy)
     if result.get("success"):
         used_data["success"].append(str(target))
@@ -215,7 +216,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# 🔥 دوال وضع GiftSheep فقط (منفصل تماماً)
+# 🔥 دوال وضع GiftSheep
 # ============================================
 FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 REFERRAL_URL_FB = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
@@ -352,7 +353,6 @@ def attack_loop(user_id, chat_id):
     bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()}")
 
     while attack_status[uid]["running"]:
-        # نقاط
         points = load_user_points(user_id)
         if points <= 0 and not is_owner(user_id):
             link = get_referral_link(user_id)
@@ -361,7 +361,6 @@ def attack_loop(user_id, chat_id):
             bot.send_message(chat_id, f"⚠️ نفدت نقاطك! شارك الرابط:\n`{link}`", parse_mode="Markdown", reply_markup=keyboard)
             break
 
-        # بروكسي
         proxy, banned = get_next_proxy(banned)
         if not proxy:
             bot.send_message(chat_id, "⚠️ لا توجد بروكسيات! انتظر 5 دقائق أو أضف بروكسي.")
@@ -373,7 +372,6 @@ def attack_loop(user_id, chat_id):
         bot.send_message(chat_id, f"⏳ محاولة #{attempts}...")
 
         if mode == 'giftcode':
-            # وضع الـ GiftCode: يبدأ من رقم البداية ويزيد (+1) ويتخطى غير الصالح
             target = str(current)
             current += 1
             attack_status[uid]["number"] = current
@@ -381,7 +379,6 @@ def attack_loop(user_id, chat_id):
             if not result.get("success") and result.get("reason") in ["invalid_user", "already_referred"]:
                 continue
         else:
-            # وضع الـ GiftSheep: توليد حسابات Firebase وهمية تلقائياً
             suffix = uuid.uuid4().hex[:8]
             email = f"fb_{suffix}@temp-mail.org"
             auth = create_firebase_account(email, "Test@2026")
@@ -390,7 +387,7 @@ def attack_loop(user_id, chat_id):
             token = auth.get('idToken')
             if not token:
                 continue
-            user_code = get_user_setting(user_id, "referral_code", "W27PO5")  # افتراضي في حال لم يضبط
+            user_code = get_user_setting(user_id, "referral_code", "W27PO5")
             if not user_code:
                 bot.send_message(chat_id, "⚠️ أدخل كود الإحالة أولاً!")
                 break
@@ -400,7 +397,6 @@ def attack_loop(user_id, chat_id):
             else:
                 result = {"success": False, "reason": msg}
 
-        # معالجة النتيجة
         if result.get("success"):
             successes += 1
             new_pts = load_user_points(user_id) - 1
@@ -423,7 +419,7 @@ def attack_loop(user_id, chat_id):
     bot.send_message(chat_id, f"⏹️ توقف. نجاح: {successes} من {attempts}")
 
 # ============================================
-# 📨 الأوامر
+# 📨 أوامر البوت
 # ============================================
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -445,7 +441,6 @@ def start_command(message):
     sub_ok, sub_type = check_subscriptions(user_id)
     referral_data = load_referral_data()
 
-    # إحالة
     if referrer_id and uid not in referral_data.get("referred_users", {}):
         if not is_subscribed_telegram(user_id) or not is_subscribed_youtube(user_id):
             kb = InlineKeyboardMarkup(row_width=1)
@@ -468,7 +463,7 @@ def start_command(message):
         bot.reply_to(message, "🔒 اشترك وأكد يوتيوب.", reply_markup=kb)
         return
 
-    # قائمة رئيسية
+    # قائمة رئيسية (تم تحسينها)
     kb = InlineKeyboardMarkup(row_width=2)
     mode = attack_mode.get(uid, 'giftcode')
     if mode == 'giftcode':
@@ -489,13 +484,24 @@ def start_command(message):
     )
 
     if is_owner(user_id):
-        kb.add(InlineKeyboardButton("👑 المالك", callback_data="owner_commands"))
+        kb.add(
+            InlineKeyboardButton("👑 المالك", callback_data="owner_commands"),
+            InlineKeyboardButton("📈 الإحصائيات", callback_data="owner_stats"),
+            InlineKeyboardButton("🔧 تعديل النقاط", callback_data="owner_edit_points")
+        )
 
     points = load_user_points(user_id)
     used = load_used_numbers(user_id)
     code = get_user_setting(user_id, "referral_code", "4094894")
 
-    bot.reply_to(message, f"✅ مرحباً {first_name}!\n💎 نقاط: {points}\n🔑 كودك: {code}\n🔄 وضع: {mode.upper()}\n✅ نجاح: {len(used['success'])}", reply_markup=kb)
+    bot.reply_to(message, f"✨ مرحباً {first_name}!\n"
+                          f"━━━━━━━━━━━━━━━\n"
+                          f"💎 نقاطك: {points}\n"
+                          f"🔑 كودك: {code}\n"
+                          f"🔄 وضع: {mode.upper()}\n"
+                          f"✅ نجاح: {len(used['success'])}\n"
+                          f"━━━━━━━━━━━━━━━\n"
+                          f"اختر من القائمة:", reply_markup=kb)
 
 # ============================================
 # 🖱️ الأزرار
@@ -587,7 +593,7 @@ def handle_callback(call):
         start_command(call.message)
         return
 
-    # أوامر المالك
+    # ========== أوامر المالك (إضافة إحصائيات وتعديل نقاط) ==========
     if call.data == "owner_commands":
         if not is_owner(user_id): return
         kb = InlineKeyboardMarkup(row_width=2)
@@ -595,9 +601,36 @@ def handle_callback(call):
             InlineKeyboardButton("➕ بروكسي", callback_data="owner_add_proxy"),
             InlineKeyboardButton("📋 بروكسيات", callback_data="owner_list_proxies"),
             InlineKeyboardButton("🗑️ حذف بروكسي", callback_data="owner_del_proxy"),
+            InlineKeyboardButton("📈 الإحصائيات", callback_data="owner_stats"),
+            InlineKeyboardButton("🔧 تعديل النقاط", callback_data="owner_edit_points"),
             InlineKeyboardButton("🔙 رجوع", callback_data="start")
         )
         bot.reply_to(call.message, "👑 قائمة المالك:", reply_markup=kb)
+        return
+
+    if call.data == "owner_stats":
+        if not is_owner(user_id): return
+        sessions = load_user_sessions()
+        if not sessions:
+            bot.reply_to(call.message, "لا يوجد مستخدمون حتى الآن.")
+            return
+        text = "📈 **إحصائيات المشتركين:**\n\n"
+        for uid, data in sessions.items():
+            points = load_user_points(int(uid))
+            used = load_used_numbers(int(uid))
+            name = data.get("first_name", "مجهول")
+            username = data.get("username", "")
+            text += f"👤 {name}"
+            if username:
+                text += f" (@{username})"
+            text += f"\n   💎 نقاط: {points} | ✅ نجاح: {len(used['success'])} | ❌ فشل: {len(used['failed'])}\n"
+        bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
+        return
+
+    if call.data == "owner_edit_points":
+        if not is_owner(user_id): return
+        bot.send_message(chat_id, "🔧 أرسل معرف المستخدم (ID) ثم النقاط الجديدة.")
+        bot.register_next_step_handler(call.message, edit_points_step)
         return
 
     if call.data == "owner_add_proxy":
@@ -667,6 +700,20 @@ def del_proxy_step(message):
         save_proxies(proxies)
         bot.reply_to(message, "✅ تم الحذف.")
 
+def edit_points_step(message):
+    if not is_owner(message.from_user.id): return
+    parts = message.text.split()
+    if len(parts) != 2:
+        bot.reply_to(message, "❌ الصيغة: `ID نقاط`")
+        return
+    try:
+        user_id = int(parts[0])
+        new_points = int(parts[1])
+        save_user_points(user_id, new_points)
+        bot.reply_to(message, f"✅ تم تعديل نقاط المستخدم {user_id} إلى {new_points}")
+    except:
+        bot.reply_to(message, "❌ بيانات غير صحيحة.")
+
 # ============================================
 # 🖥️ تشغيل Flask
 # ============================================
@@ -691,6 +738,6 @@ if __name__ == "__main__":
             bot.polling(none_stop=True, interval=1)
         except Exception as e:
             if "409" in str(e):
-                print("⚠️ خطأ 409: يوجد نسخة أخرى من البوت تعمل! أوقفها وأعد التشغيل.")
+                print("⚠️ خطأ 409: يوجد نسخة أخرى تعمل! أوقفها وأعد التشغيل.")
                 exit(1)
             time.sleep(5)
