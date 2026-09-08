@@ -24,7 +24,9 @@ INITIAL_POINTS = 50
 YOUTUBE_VERIFY_KEY = "youtube_verified"
 YOUTUBE_VERIFY_DAYS = 7
 EXTRA_CHANNELS_FILE = "extra_channels.json"
-DELAY_BETWEEN_ATTEMPTS = 300  # 5 دقائق
+DELAY_BETWEEN_ATTEMPTS = 10  # تم تقليلها لتجربة أسرع، لكن يمكن زيادتها إذا لزم
+PROXIES_FILE = "proxies.txt"
+USER_PROXIES_FILE = "user_proxies.txt"
 
 # ============================================
 # 📂 ملفات البيانات
@@ -110,6 +112,51 @@ def set_user_setting(user_id, key, value):
     save_user_settings(user_id, data)
 
 # ============================================
+# 🔄 دوال البروكسيات (الجديدة)
+# ============================================
+def load_proxies():
+    if not os.path.exists(PROXIES_FILE):
+        return []
+    with open(PROXIES_FILE, 'r') as f:
+        return [line.strip() for line in f if line.strip()]
+
+def save_proxies(proxies):
+    with open(PROXIES_FILE, 'w') as f:
+        f.write('\n'.join(proxies))
+
+def load_user_proxies():
+    if not os.path.exists(USER_PROXIES_FILE):
+        return []
+    with open(USER_PROXIES_FILE, 'r') as f:
+        return [line.strip() for line in f if line.strip()]
+
+def save_user_proxies(proxies):
+    with open(USER_PROXIES_FILE, 'w') as f:
+        f.write('\n'.join(proxies))
+
+def get_all_proxies():
+    return load_proxies() + load_user_proxies()
+
+def test_proxy(proxy):
+    try:
+        # طلب خفيف جداً لاختبار الاتصال
+        r = requests.get('https://httpbin.org/ip', proxies={'http': proxy, 'https': proxy}, timeout=5)
+        if r.status_code == 200:
+            return True
+    except:
+        pass
+    return False
+
+def get_next_proxy():
+    """إرجاع بروكسي شغال أو None إذا لم يوجد أحد شغال"""
+    proxies = get_all_proxies()
+    random.shuffle(proxies)
+    for proxy in proxies:
+        if test_proxy(proxy):
+            return proxy
+    return None
+
+# ============================================
 # 👤 نظام الإحالة الداخلي
 # ============================================
 def load_referral_data():
@@ -167,16 +214,17 @@ def get_all_referral_stats():
     return referral_data.get("referrals", {})
 
 # ============================================
-# 🎯 دوال الإحالة (GiftCode - بدون بروكسي)
+# 🎯 دوال الإحالة (GiftCode - مع دعم البروكسي)
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
 DEFAULT_START = 4084879
 
-def send_giftcode_referral(referral_code, user_id):
+def send_giftcode_referral(referral_code, user_id, proxy=None):
     params = {"referred_user_id": str(user_id), "ref_code": str(referral_code)}
     headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
     try:
-        response = requests.get(BASE_URL, params=params, headers=headers, timeout=15)
+        response = requests.get(BASE_URL, params=params, headers=headers, timeout=15, proxies=proxies)
         if response.status_code == 200:
             data = response.json()
             if data.get("success"):
@@ -197,16 +245,11 @@ def send_giftcode_referral(referral_code, user_id):
     except Exception as e:
         return {"success": False, "reason": "connection_error", "error": str(e)}
 
-def process_giftcode(user_id, target):
+def process_giftcode(user_id, target, proxy=None):
     used_data = load_used_numbers(user_id)
     ref_code = get_user_setting(user_id, "referral_code", "4094894")
-    if str(target) in used_data["success"]:
-        return {"success": False, "reason": "already_used_success"}
-    if str(target) in used_data["failed"]:
-        return {"success": False, "reason": "already_used_failed"}
-    if str(target) in used_data["already"]:
-        return {"success": False, "reason": "already_used_already"}
-    result = send_giftcode_referral(ref_code, target)
+    # تجاهل الفحص المحلي القديم للأرقام، نعتمد على الخادم والبروكسي
+    result = send_giftcode_referral(ref_code, target, proxy)
     if result.get("success"):
         used_data["success"].append(str(target))
         save_used_numbers(user_id, used_data)
@@ -234,7 +277,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# 🔥 دوال GiftSheep (Firebase - بدون بروكسي)
+# 🔥 دوال GiftSheep (Firebase - مع دعم البروكسي)
 # ============================================
 FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 REFERRAL_URL_FB = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
@@ -254,15 +297,16 @@ def create_firebase_account(email, password):
     except Exception as e:
         return {"error": str(e)}
 
-def send_firebase_referral(access_token):
+def send_firebase_referral(access_token, proxy=None):
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json; charset=utf-8',
         'User-Agent': 'okhttp/3.12.13'
     }
     payload = {"data": {"code": TARGET_CODE_FB}}
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
     try:
-        resp = requests.post(REFERRAL_URL_FB, json=payload, headers=headers, timeout=30)
+        resp = requests.post(REFERRAL_URL_FB, json=payload, headers=headers, timeout=30, proxies=proxies)
         try:
             result = resp.json()
             success = result.get('result', {}).get('success', False)
@@ -356,7 +400,7 @@ def check_all_subscriptions(user_id):
     return True, None
 
 # ============================================
-# 🚀 حلقة الهجوم الموحدة (بدون بروكسيات)
+# 🚀 حلقة الهجوم الموحدة (مع نظام البروكسي)
 # ============================================
 attack_status = {}
 attack_mode = {}  # 'giftcode' أو 'giftsheep'
@@ -370,71 +414,47 @@ def attack_loop(user_id, chat_id):
     successes = 0
     attack_status[user_id_str] = {"running": True, "number": current_number}
 
-    bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()} (بدون بروكسيات، تأخير 5 دقائق بين المحاولات)")
-
-    user_data = load_user_sessions().get(user_id_str, {})
-    user_name = user_data.get("first_name", "مستخدم")
+    bot.send_message(chat_id, f"🚀 بدء الهجوم بوضع {mode.upper()} (مع نظام البروكسيات)")
 
     while attack_status[user_id_str]["running"]:
         sub_ok, sub_type = check_all_subscriptions(user_id)
         if not sub_ok:
-            if sub_type == "telegram":
-                bot.send_message(chat_id, f"❌ اشترك في قناة التلجرام: @{CHANNEL_TG}")
-            elif sub_type == "youtube":
-                bot.send_message(chat_id, f"❌ أكد اشتراك يوتيوب (زر التأكيد)")
-            elif sub_type and sub_type.startswith("extra_"):
-                channel = sub_type.replace("extra_", "")
-                bot.send_message(chat_id, f"❌ اشترك في القناة الإضافية: @{channel}")
-            else:
-                bot.send_message(chat_id, "❌ اشترك في جميع القنوات المطلوبة.")
+            bot.send_message(chat_id, "❌ تأكد من الاشتراكات أولاً.")
             break
 
         points = load_user_points(user_id)
         if points <= 0 and not is_owner(user_id):
-            referral_link = get_referral_link(user_id)
-            keyboard = InlineKeyboardMarkup()
-            btn_link = InlineKeyboardButton("🔗 رابط الإحالة", callback_data="my_referral")
-            keyboard.add(btn_link)
-            bot.send_message(chat_id,
-                f"⚠️ نفدت نقاطك! شارك رابط الإحالة:\n`{referral_link}`",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
+            bot.send_message(chat_id, "⚠️ نفدت النقاط!")
             break
 
+        # الحصول على بروكسي شغال
+        proxy = get_next_proxy()
+        if not proxy:
+            bot.send_message(chat_id, "⚠️ لا توجد بروكسيات شغالة متاحة حالياً. أضف بروكسي أو انتظر.")
+            time.sleep(30)
+            continue
+
         attempts += 1
-        bot.send_message(chat_id, f"⏳ محاولة #{attempts}...")
+        bot.send_message(chat_id, f"⏳ محاولة #{attempts} باستخدام بروكسي...")
 
         if mode == 'giftcode':
-            target = str(current_number)
-            current_number += 1
-            attack_status[user_id_str]["number"] = current_number
-            result = process_giftcode(user_id, target)
+            # توليد رقم عشوائي جديد في نطاق واسع لتفادي الأرقام المحظورة سابقاً
+            target = str(random.randint(4000000, 9999999))
+            attack_status[user_id_str]["number"] = target
+            result = process_giftcode(user_id, target, proxy)
         else:
+            # انشاء حساب Firebase وارسال الطلب مع البروكسي
             random_suffix = uuid.uuid4().hex[:8]
             email = f"fb_{random_suffix}@temp-mail.org"
             auth_data = create_firebase_account(email, "Test@2026")
             if not auth_data or 'error' in auth_data:
                 bot.send_message(chat_id, f"❌ فشل إنشاء حساب Firebase: {auth_data.get('error', 'Unknown')}")
-                bot.send_message(chat_id, f"⏳ انتظار {DELAY_BETWEEN_ATTEMPTS//60} دقائق...")
-                time.sleep(DELAY_BETWEEN_ATTEMPTS)
                 continue
-
             id_token = auth_data.get('idToken')
-            refresh_token = auth_data.get('refreshToken')
             if not id_token:
-                bot.send_message(chat_id, "❌ لا يوجد توكن.")
-                time.sleep(DELAY_BETWEEN_ATTEMPTS)
                 continue
 
-            success, msg = send_firebase_referral(id_token)
-            if not success and "token" in msg.lower():
-                new_token, new_refresh = refresh_firebase_token(refresh_token)
-                if new_token:
-                    id_token = new_token
-                    refresh_token = new_refresh
-                    success, msg = send_firebase_referral(id_token)
-
+            success, msg = send_firebase_referral(id_token, proxy)  # نمرر البروكسي
             if success:
                 result = {"success": True, "gold": 0}
             else:
@@ -447,20 +467,20 @@ def attack_loop(user_id, chat_id):
             new_points = load_user_points(user_id) - 1
             save_user_points(user_id, new_points)
             bot.send_message(chat_id, f"🎉 نجاح! (+{gold} GP)\n💎 نقاط متبقية: {new_points}")
-            bot.send_message(OWNER_ID, f"✅ نجاح {mode.upper()} من {user_name} (ID: {user_id}) -> +{gold} GP")
+            bot.send_message(OWNER_ID, f"✅ نجاح {mode.upper()} من {user_id} -> +{gold} GP")
         else:
             reason = result.get("reason", "غير معروف")
             arabic_reason = translate_reason(reason)
             bot.send_message(chat_id, f"⚠️ فشل: {arabic_reason}")
-            
-            # ✅ التعديل: التخطي السريع للأرقام الفاشلة
-            if reason in ["already_used_success", "already_used_failed", "already_used_already"]:
-                continue  # لا ننتظر، ننتقل فوراً للرقم التالي
-            elif reason in ["same_ip", "rate_limited"]:
-                bot.send_message(chat_id, f"⏳ انتظار 5 دقائق بسبب {arabic_reason}...")
-                time.sleep(DELAY_BETWEEN_ATTEMPTS)
+
+            # التبديل التلقائي للبروكسي (بدون انتظار طويل)
+            if reason in ["same_ip", "rate_limited", "connection_error"]:
+                bot.send_message(chat_id, "🔄 جاري التبديل لبروكسي آخر...")
+                continue  # ننتقل فوراً للتكرار التالي للحصول على بروكسي جديد
+            elif reason in ["already_used_success", "already_used_failed", "already_used_already"]:
+                continue  # نتخطى هذا الرقم
             else:
-                time.sleep(DELAY_BETWEEN_ATTEMPTS)
+                time.sleep(2)  # تأخير بسيط
 
     attack_status[user_id_str]["running"] = False
     bot.send_message(chat_id, f"⏹️ توقف الهجوم. إجمالي النجاحات: {successes} من {attempts} محاولة.")
@@ -563,7 +583,7 @@ def start_command(message):
     )
 
 # ============================================
-# 🖱️ معالجة الأزرار
+# 🖱️ معالجة الأزرار (Callbacks)
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -743,7 +763,6 @@ def handle_callback(call):
             bot.reply_to(call.message, "📭 لا يوجد مستخدمون مسجلون حتى الآن.")
             return
 
-        # تجميع البيانات
         users_data = []
         total_points = 0
         total_success = 0
@@ -770,7 +789,6 @@ def handle_callback(call):
                 "active": sub_ok
             })
 
-        # ترتيب حسب النقاط تنازلياً
         users_data.sort(key=lambda x: x["points"], reverse=True)
 
         text = "📊 **الإحصائيات العامة التفصيلية**\n\n"
@@ -838,7 +856,7 @@ def handle_callback(call):
         bot.reply_to(call.message, text[:4000], parse_mode="Markdown")
         return
 
-    # تعديل النقاط (يدعم اسم المستخدم أو المعرف)
+    # تعديل النقاط
     if call.data == "owner_edit_points":
         if not is_owner(user_id): return
         bot.answer_callback_query(call.id, "✏️ أرسل اسم المستخدم (بدون @) أو المعرف الرقمي:")
@@ -853,6 +871,60 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "🧹 تم مسح الجلسات!", show_alert=True)
         return
 
+    # ====== أوامر البروكسي ======
+    if call.data == "owner_proxy_commands":
+        if not is_owner(user_id): return
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("➕ إضافة بروكسي", callback_data="owner_add_proxy"),
+            InlineKeyboardButton("📋 عرض البروكسيات", callback_data="owner_list_proxies"),
+            InlineKeyboardButton("🧪 اختبار البروكسيات", callback_data="owner_test_proxies"),
+            InlineKeyboardButton("🗑️ حذف بروكسي", callback_data="owner_del_proxy"),
+            InlineKeyboardButton("🔙 رجوع", callback_data="owner_commands")
+        )
+        bot.reply_to(call.message, "🔐 **إدارة البروكسيات:**", reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if call.data == "owner_add_proxy":
+        if not is_owner(user_id): return
+        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي (http://user:pass@ip:port)")
+        msg = bot.send_message(chat_id, "أرسل البروكسي، مثال: `http://user:pass@1.2.3.4:8080`")
+        bot.register_next_step_handler(msg, add_proxy_step)
+        return
+
+    if call.data == "owner_list_proxies":
+        if not is_owner(user_id): return
+        proxies = get_all_proxies()
+        if proxies:
+            bot.reply_to(call.message, "📋 **البروكسيات الحالية:**\n" + "\n".join(proxies))
+        else:
+            bot.reply_to(call.message, "📭 لا توجد بروكسيات.")
+        return
+
+    if call.data == "owner_test_proxies":
+        if not is_owner(user_id): return
+        proxies = get_all_proxies()
+        if not proxies:
+            bot.reply_to(call.message, "📭 لا توجد بروكسيات.")
+            return
+        bot.send_message(chat_id, "🧪 جاري اختبار البروكسيات...")
+        good = []
+        bad = []
+        for p in proxies:
+            if test_proxy(p):
+                good.append(p)
+            else:
+                bad.append(p)
+        bot.reply_to(call.message, f"✅ الشغالة: {len(good)}\n❌ الفاشلة: {len(bad)}")
+        return
+
+    if call.data == "owner_del_proxy":
+        if not is_owner(user_id): return
+        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي للحذف")
+        msg = bot.send_message(chat_id, "أرسل البروكسي الذي تريد حذفه:")
+        bot.register_next_step_handler(msg, del_proxy_step)
+        return
+
     # المساعدة
     if call.data == "owner_help":
         help_text = (
@@ -865,7 +937,8 @@ def handle_callback(call):
             "📊 إحصائيات الإحالات\n"
             "👥 عرض المستخدمين\n"
             "🔧 تعديل نقاط (باسم المستخدم أو المعرف)\n"
-            "🧹 مسح جلسات المستخدمين"
+            "🧹 مسح جلسات المستخدمين\n"
+            "🔐 إدارة البروكسيات"
         )
         bot.reply_to(call.message, help_text, parse_mode="Markdown")
         return
@@ -888,6 +961,7 @@ def show_owner_menu(message):
         InlineKeyboardButton("👥 عرض المستخدمين", callback_data="owner_list_users"),
         InlineKeyboardButton("🔧 تعديل نقاط", callback_data="owner_edit_points"),
         InlineKeyboardButton("🧹 مسح الجلسات", callback_data="owner_clear_sessions"),
+        InlineKeyboardButton("🔐 إدارة البروكسيات", callback_data="owner_proxy_commands"),
         InlineKeyboardButton("❓ مساعدة", callback_data="owner_help")
     )
     bot.reply_to(message, "👑 **قائمة المالك:**", reply_markup=keyboard, parse_mode="Markdown")
@@ -936,7 +1010,6 @@ def broadcast_step(message):
     bot.reply_to(message, f"✅ تم الإرسال إلى {count} مستخدم.")
 
 def find_user_by_username(username):
-    """تبحث عن المستخدم الذي يطابق اسم المستخدم (بدون @) وتعرف معرفه."""
     username = username.strip().lstrip('@').lower()
     sessions = load_user_sessions()
     for uid, data in sessions.items():
@@ -947,7 +1020,6 @@ def find_user_by_username(username):
 def edit_points_get_user(message):
     if not is_owner(message.from_user.id): return
     user_input = message.text.strip()
-    # محاولة التعرف على المعرف الرقمي
     if user_input.isdigit():
         target_id = int(user_input)
         sessions = load_user_sessions()
@@ -959,7 +1031,6 @@ def edit_points_get_user(message):
             bot.reply_to(message, f"❌ لا يوجد مستخدم بهذا المعرف: {target_id}.\nاستخدم اسم المستخدم بدلاً من ذلك، أو '👥 عرض المستخدمين' للتحقق.")
             return
     else:
-        # البحث عن طريق اسم المستخدم
         target_id, user_data = find_user_by_username(user_input)
         if target_id:
             name = user_data.get("first_name", "مجهول")
@@ -986,13 +1057,93 @@ def edit_points_set_value(message, target_id):
             reply_text += f" (@{username})"
         reply_text += f" (ID: {target_id}): {current} -> {new}"
         bot.reply_to(message, reply_text)
-        # إرسال إشعار للمستخدم (اختياري)
         try:
             bot.send_message(target_id, f"🔔 تم تحديث رصيد نقاطك.\nرصيدك الحالي: {new}")
         except:
             pass
     except ValueError:
         bot.reply_to(message, "❌ قيمة غير صالحة. أرسل رقماً (موجب أو سالب).")
+
+# ============================================
+# 🔄 دوال البروكسي (الخطوات)
+# ============================================
+def add_proxy_step(message):
+    if not is_owner(message.from_user.id): return
+    proxy = message.text.strip()
+    if not proxy.startswith("http://") and not proxy.startswith("https://"):
+        proxy = f"http://{proxy}"
+    proxies = load_proxies()
+    if proxy not in proxies:
+        proxies.append(proxy)
+        save_proxies(proxies)
+        bot.reply_to(message, "✅ تمت إضافة البروكسي.")
+    else:
+        bot.reply_to(message, "⚠️ موجود مسبقاً.")
+
+def del_proxy_step(message):
+    if not is_owner(message.from_user.id): return
+    proxy = message.text.strip()
+    proxies = load_proxies()
+    if proxy in proxies:
+        proxies.remove(proxy)
+        save_proxies(proxies)
+        bot.reply_to(message, "✅ تم الحذف.")
+    else:
+        user_proxies = load_user_proxies()
+        if proxy in user_proxies:
+            user_proxies.remove(proxy)
+            save_user_proxies(user_proxies)
+            bot.reply_to(message, "✅ تم الحذف من بروكسيات المستخدمين.")
+        else:
+            bot.reply_to(message, "⚠️ غير موجود.")
+
+# ============================================
+# 📨 أوامر المستخدمين العامة (بروكسي + أوامر المالك)
+# ============================================
+@bot.message_handler(commands=['addproxy'])
+def add_proxy_command(message):
+    user_id = message.from_user.id
+    try:
+        proxy_text = message.text.split()[1]
+        if not proxy_text.startswith("http://") and not proxy_text.startswith("https://"):
+            proxy_text = f"http://{proxy_text}"
+        proxies = load_user_proxies()
+        if proxy_text not in proxies:
+            proxies.append(proxy_text)
+            save_user_proxies(proxies)
+            bot.reply_to(message, "✅ تم إضافة البروكسي بنجاح وسيتم استخدامه في الهجوم.")
+            bot.send_message(OWNER_ID, f"🔐 أضاف مستخدم جديد بروكسي:\n👤 {message.from_user.first_name} (ID: {message.from_user.id})\n🔗 {proxy_text}")
+        else:
+            bot.reply_to(message, "⚠️ هذا البروكسي موجود مسبقاً.")
+    except:
+        bot.reply_to(message, "❌ صيغة غير صحيحة. استخدم: /addproxy ip:port:user:pass")
+
+@bot.message_handler(commands=['listproxies'])
+def list_proxies(message):
+    if not is_owner(message.from_user.id): return
+    proxies = get_all_proxies()
+    if proxies:
+        text = "📋 البروكسيات الحالية:\n" + "\n".join(proxies)
+        bot.reply_to(message, text)
+    else:
+        bot.reply_to(message, "📭 لا توجد بروكسيات.")
+
+@bot.message_handler(commands=['delproxy'])
+def del_proxy_command(message):
+    if not is_owner(message.from_user.id): return
+    try:
+        proxy = message.text.split()[1]
+        proxies = load_proxies()
+        if proxy in proxies:
+            proxies.remove(proxy)
+            save_proxies(proxies)
+        user_proxies = load_user_proxies()
+        if proxy in user_proxies:
+            user_proxies.remove(proxy)
+            save_user_proxies(user_proxies)
+        bot.reply_to(message, "✅ تم الحذف.")
+    except:
+        bot.reply_to(message, "❌ أعط البروكسي المطلوب حذفه.")
 
 # ============================================
 # 🖥️ خادم Flask
@@ -1015,7 +1166,6 @@ def run_flask():
 # ⏰ مهمة الإبقاء على البوت نشطاً (بديل cron-job)
 # ============================================
 def keep_alive():
-    """ترسل طلباً إلى /health كل 10 دقائق لمنع الإيقاف التلقائي من Render"""
     while True:
         try:
             requests.get("https://giftgode51031.onrender.com/health", timeout=5)
@@ -1029,23 +1179,20 @@ def keep_alive():
 # ============================================
 if __name__ == "__main__":
     print("="*60)
-    print("🤖 بوت الإحالات المتطور (بدون بروكسيات)")
+    print("🤖 بوت الإحالات المتطور (مع نظام البروكسي)")
     print(f"👤 المالك: {OWNER_ID}")
     print(f"📢 قناة التلجرام: @{CHANNEL_TG}")
     print(f"🎬 يوتيوب: {CHANNEL_YT}")
     print("="*60)
 
-    # بدء خيط Flask
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # بدء خيط Keep-Alive
     keep_alive_thread = threading.Thread(target=keep_alive)
     keep_alive_thread.daemon = True
     keep_alive_thread.start()
 
-    # تشغيل البوت
     while True:
         try:
             bot.polling(none_stop=True, interval=1)
