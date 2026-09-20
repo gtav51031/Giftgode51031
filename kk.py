@@ -1,4 +1,3 @@
-
 import os
 import telebot
 import requests
@@ -12,7 +11,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, jsonify
 
 # ============================================
-# 🔐 إعدادات البوت الأساسية
+# 🔐 إعدادات البوت
 # ============================================
 BOT_TOKEN = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
 OWNER_ID = 6366853738
@@ -28,6 +27,25 @@ USER_PROXIES_FILE = "user_proxies.txt"
 DATA_DIR = "user_data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
+
+# ============================================
+# 🎨 دالة مساعدة لإنشاء الأزرار الملونة
+# ============================================
+def btn(text, callback_data=None, url=None, style=None):
+    """إنشاء زر ملون بأسلوب Telegram الجديد."""
+    kwargs = {"text": text}
+    if callback_data:
+        kwargs["callback_data"] = callback_data
+    if url:
+        kwargs["url"] = url
+    if style:
+        kwargs["style"] = style
+    try:
+        return InlineKeyboardButton(**kwargs)
+    except TypeError:
+        # نسخة قديمة لا تدعم style → نرجع للزر العادي
+        kwargs.pop("style", None)
+        return InlineKeyboardButton(**kwargs)
 
 # ============================================
 # 📂 ملفات البيانات
@@ -105,18 +123,12 @@ def save_referral_data(data):
 def get_referral_link(user_id):
     return f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
-# ============================================
-# 🆔 دوال البحث عن المستخدم
-# ============================================
 def find_user_id_by_input(input_str):
-    """يبحث عن user_id عن طريق @username أو الرقم مباشرة."""
     input_str = input_str.strip()
     if not input_str:
         return None
-    # لو المستخدم كتب رقم ID مباشرة
     if input_str.lstrip('@').isdigit():
         return int(input_str.lstrip('@'))
-    # البحث في الجلسات عن اليوزر
     username = input_str.lstrip('@').lower()
     sessions = load_user_sessions()
     for uid, data in sessions.items():
@@ -126,7 +138,6 @@ def find_user_id_by_input(input_str):
     return None
 
 def get_user_display(user_id):
-    """يرجع اسم المستخدم ويوزره لعرضه للمالك."""
     sessions = load_user_sessions()
     data = sessions.get(str(user_id), {})
     name = data.get("first_name", "مجهول")
@@ -136,7 +147,7 @@ def get_user_display(user_id):
     return name
 
 # ============================================
-# 🔄 دوال البروكسيات
+# 🔄 البروكسيات
 # ============================================
 def load_proxies():
     if not os.path.exists(PROXIES_FILE):
@@ -164,11 +175,9 @@ def get_all_proxies():
 def test_proxy(proxy):
     try:
         r = requests.get('https://httpbin.org/ip', proxies={'http': proxy, 'https': proxy}, timeout=5)
-        if r.status_code == 200:
-            return True
+        return r.status_code == 200
     except:
-        pass
-    return False
+        return False
 
 def get_next_proxy(banned_proxies=None):
     if banned_proxies is None:
@@ -185,7 +194,7 @@ def get_next_proxy(banned_proxies=None):
     return None, banned_proxies
 
 # ============================================
-# 🎯 دوال وضع GiftCode
+# 🎯 GiftCode
 # ============================================
 BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
 DEFAULT_START = 4084879
@@ -214,7 +223,7 @@ def send_giftcode_referral(referral_code, user_id, proxy=None):
             return {"success": False, "reason": "rate_limited"}
         else:
             return {"success": False, "reason": f"HTTP_{response.status_code}"}
-    except Exception as e:
+    except:
         return {"success": False, "reason": "connection_error"}
 
 def process_giftcode(user_id, target, proxy=None):
@@ -245,7 +254,7 @@ def translate_reason(reason):
     return translations.get(reason, reason)
 
 # ============================================
-# 🔥 دوال وضع GiftSheep
+# 🔥 GiftSheep
 # ============================================
 FIREBASE_API_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
 REFERRAL_URL_FB = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
@@ -259,8 +268,7 @@ def create_firebase_account(email, password):
         data = resp.json()
         if resp.status_code == 200:
             return data
-        else:
-            return {"error": data.get('error', {}).get('message', 'Unknown')}
+        return {"error": data.get('error', {}).get('message', 'Unknown')}
     except Exception as e:
         return {"error": str(e)}
 
@@ -298,7 +306,7 @@ def refresh_firebase_token(refresh_token):
     return None, None
 
 # ============================================
-# 🤖 إعداد البوت
+# 🤖 البوت
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
@@ -344,20 +352,16 @@ def process_referral_new_user(new_user_id, referrer_id):
         return False, "لا يمكنك إحالة نفسك!"
     if not is_subscribed_telegram(new_user_id) or not is_subscribed_youtube(new_user_id):
         return False, "يجب الاشتراك أولاً!"
-
     referral_data = load_referral_data()
     if str(new_user_id) in referral_data.get("referred_users", {}):
         return False, "تمت إحالته مسبقاً!"
-
     if str(referrer_id) not in referral_data.get("referrals", {}):
         referral_data.setdefault("referrals", {})[str(referrer_id)] = {"count": 0, "points_earned": 0, "users": []}
-
     referral_data["referrals"][str(referrer_id)]["count"] += 1
     referral_data["referrals"][str(referrer_id)]["points_earned"] += REFERRAL_POINTS
     referral_data["referrals"][str(referrer_id)]["users"].append(str(new_user_id))
     referral_data.setdefault("referred_users", {})[str(new_user_id)] = str(referrer_id)
     save_referral_data(referral_data)
-
     current = load_user_points(referrer_id)
     save_user_points(referrer_id, current + REFERRAL_POINTS)
     save_user_points(new_user_id, INITIAL_POINTS)
@@ -386,7 +390,7 @@ def attack_loop(user_id, chat_id):
         if points <= 0 and not is_owner(user_id):
             link = get_referral_link(user_id)
             keyboard = InlineKeyboardMarkup()
-            keyboard.add(InlineKeyboardButton("🟣 🔗 رابط الإحالة", callback_data="my_referral"))
+            keyboard.add(btn("🔗 رابط الإحالة", callback_data="my_referral", style="primary"))
             bot.send_message(chat_id, f"⚠️ نفدت نقاطك! شارك الرابط:\n`{link}`", parse_mode="Markdown", reply_markup=keyboard)
             break
 
@@ -430,10 +434,8 @@ def attack_loop(user_id, chat_id):
             successes += 1
             new_pts = load_user_points(user_id) - 1
             save_user_points(user_id, new_pts)
-            # ✅ إشعار المستخدم (بدون علمه بإشعار المالك)
             bot.send_message(chat_id, f"🎉 نجاح! 💎 النقاط: {new_pts}")
-
-            # ✅ إشعار المالك باسم المستخدم بدل ID (بدون علم المستخدم)
+            # إشعار المالك بالاسم واليوزر (بدون علم المستخدم)
             try:
                 display = get_user_display(user_id)
                 bot.send_message(
@@ -461,7 +463,7 @@ def attack_loop(user_id, chat_id):
     bot.send_message(chat_id, f"⏹️ توقف. نجاح: {successes} من {attempts}")
 
 # ============================================
-# 📨 أوامر البوت
+# 📨 /start
 # ============================================
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -480,7 +482,6 @@ def start_command(message):
         sessions[uid] = {"first_name": first_name, "username": message.from_user.username or ""}
         save_user_sessions(sessions)
     else:
-        # تحديث الاسم واليوزر باستمرار (مهم لخاصية تعديل النقاط باليوزر)
         changed = False
         if sessions[uid].get("first_name") != first_name:
             sessions[uid]["first_name"] = first_name
@@ -497,10 +498,10 @@ def start_command(message):
     if referrer_id and uid not in referral_data.get("referred_users", {}):
         if not is_subscribed_telegram(user_id) or not is_subscribed_youtube(user_id):
             kb = InlineKeyboardMarkup(row_width=1)
-            kb.add(InlineKeyboardButton("📢 اشترك", url=f"https://t.me/{CHANNEL_TG}"))
-            kb.add(InlineKeyboardButton("🟡 🎬 يوتيوب", callback_data="verify_youtube"))
-            kb.add(InlineKeyboardButton("🟢 ✅ تأكيد", callback_data=f"confirm_referral_{referrer_id}"))
-            bot.reply_to(message, "اشترك أولاً.", reply_markup=kb)
+            kb.add(btn("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_TG}", style="primary"))
+            kb.add(btn("🎬 اشترك في يوتيوب", callback_data="verify_youtube", style="danger"))
+            kb.add(btn("✅ تأكيد", callback_data=f"confirm_referral_{referrer_id}", style="success"))
+            bot.reply_to(message, "🔒 اشترك أولاً.", reply_markup=kb)
             return
         else:
             success, msg = process_referral_new_user(user_id, referrer_id)
@@ -509,39 +510,39 @@ def start_command(message):
     if not sub_ok:
         kb = InlineKeyboardMarkup(row_width=1)
         if sub_type == "telegram":
-            kb.add(InlineKeyboardButton("📢 اشترك", url=f"https://t.me/{CHANNEL_TG}"))
+            kb.add(btn("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_TG}", style="primary"))
         elif sub_type == "youtube":
-            kb.add(InlineKeyboardButton("🟡 🎬 يوتيوب", callback_data="verify_youtube"))
-        kb.add(InlineKeyboardButton("🟢 ✅ تحقق", callback_data="check_sub"))
+            kb.add(btn("🎬 اشترك في يوتيوب", callback_data="verify_youtube", style="danger"))
+        kb.add(btn("✅ تحقق", callback_data="check_sub", style="success"))
         bot.reply_to(message, "🔒 اشترك وأكد يوتيوب.", reply_markup=kb)
         return
 
-    # القائمة الرئيسية بالأزرار الملونة
+    # ================= القائمة الرئيسية =================
     kb = InlineKeyboardMarkup(row_width=2)
     mode = attack_mode.get(uid, 'giftcode')
     if mode == 'giftcode':
         kb.add(
-            InlineKeyboardButton("🟣 🔑 كود الإحالة", callback_data="set_referral"),
-            InlineKeyboardButton("🟠 🔢 رقم البداية", callback_data="set_start")
+            btn("🔑 كود الإحالة", callback_data="set_referral", style="primary"),
+            btn("🔢 رقم البداية", callback_data="set_start", style="primary")
         )
     else:
-        kb.add(InlineKeyboardButton("🟣 🔑 كود الإحالة", callback_data="set_referral"))
+        kb.add(btn("🔑 كود الإحالة", callback_data="set_referral", style="primary"))
 
     kb.add(
-        InlineKeyboardButton("🟢 ▶️ بدء", callback_data="start_attack"),
-        InlineKeyboardButton("🔴 ⏹️ إيقاف", callback_data="stop_attack"),
+        btn("▶️ بدء", callback_data="start_attack", style="success"),
+        btn("⏹️ إيقاف", callback_data="stop_attack", style="danger"),
     )
     kb.add(
-        InlineKeyboardButton("🟡 🔄 تبديل الوضع", callback_data="toggle_mode"),
-        InlineKeyboardButton("🔵 📊 الحالة", callback_data="status"),
+        btn("🔄 تبديل الوضع", callback_data="toggle_mode", style="primary"),
+        btn("📊 الحالة", callback_data="status", style="primary"),
     )
     kb.add(
-        InlineKeyboardButton("🟣 🔗 رابط الإحالة", callback_data="my_referral"),
-        InlineKeyboardButton("🟠 ➕ إضافة بروكسي", callback_data="user_add_proxy"),
+        btn("🔗 رابط الإحالة", callback_data="my_referral", style="primary"),
+        btn("➕ إضافة بروكسي", callback_data="user_add_proxy", style="success"),
     )
 
     if is_owner(user_id):
-        kb.add(InlineKeyboardButton("⚫ 👑 المالك", callback_data="owner_commands"))
+        kb.add(btn("👑 قائمة المالك", callback_data="owner_commands", style="danger"))
 
     points = load_user_points(user_id)
     used = load_used_numbers(user_id)
@@ -557,7 +558,7 @@ def start_command(message):
                           f"اختر من القائمة:", reply_markup=kb)
 
 # ============================================
-# 🖱️ الأزرار
+# 🖱️ معالج الأزرار (مُصلّح)
 # ============================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -565,204 +566,248 @@ def handle_callback(call):
     chat_id = call.message.chat.id
     uid = str(user_id)
 
-    if call.data == "user_add_proxy":
-        msg = bot.send_message(chat_id, "🔐 أرسل البروكسي (http://user:pass@ip:port):")
-        bot.register_next_step_handler(msg, user_add_proxy_step, user_id)
-        return
+    # ✅ نرد على الـ callback فوراً لمنع تعليق الزر
+    # (الأزرار التي تحتاج alert ستستخدم show_alert لاحقاً بدل هذا)
 
-    if call.data.startswith("confirm_referral_"):
-        ref_id = int(call.data.replace("confirm_referral_", ""))
-        success, msg = process_referral_new_user(user_id, ref_id)
-        bot.answer_callback_query(call.id, msg, show_alert=True)
-        return
-
-    if call.data == "toggle_mode":
-        mode = attack_mode.get(uid, 'giftcode')
-        new = 'giftsheep' if mode == 'giftcode' else 'giftcode'
-        attack_mode[uid] = new
-        bot.answer_callback_query(call.id, f"تم التبديل إلى {new.upper()}", show_alert=True)
-        start_command(call.message)
-        return
-
-    if call.data == "start_attack":
-        if attack_status.get(uid, {}).get("running", False):
-            bot.answer_callback_query(call.id, "يعمل بالفعل!", show_alert=True)
+    try:
+        if call.data == "user_add_proxy":
+            bot.answer_callback_query(call.id)
+            msg = bot.send_message(chat_id, "🔐 أرسل البروكسي (http://user:pass@ip:port):")
+            bot.register_next_step_handler(msg, user_add_proxy_step, user_id)
             return
-        points = load_user_points(user_id)
-        if points <= 0 and not is_owner(user_id):
-            bot.answer_callback_query(call.id, "نقاطك 0!", show_alert=True)
+
+        if call.data.startswith("confirm_referral_"):
+            ref_id = int(call.data.replace("confirm_referral_", ""))
+            success, msg = process_referral_new_user(user_id, ref_id)
+            bot.answer_callback_query(call.id, msg, show_alert=True)
             return
-        attack_status[uid] = {"running": True}
-        t = threading.Thread(target=attack_loop, args=(user_id, chat_id))
-        t.daemon = True
-        t.start()
-        bot.answer_callback_query(call.id, "تم البدء!", show_alert=True)
-        return
 
-    if call.data == "stop_attack":
-        if attack_status.get(uid, {}).get("running", False):
-            attack_status[uid]["running"] = False
-            bot.answer_callback_query(call.id, "جاري الإيقاف...", show_alert=True)
-        else:
-            bot.answer_callback_query(call.id, "لا يوجد هجوم!", show_alert=True)
-        return
-
-    if call.data == "status":
-        points = load_user_points(user_id)
-        used = load_used_numbers(user_id)
-        mode = attack_mode.get(uid, 'giftcode')
-        running = attack_status.get(uid, {}).get("running", False)
-        bot.send_message(chat_id, f"📊 الحالة:\n🔄 {mode.upper()}\n▶️ {'يعمل' if running else 'متوقف'}\n💎 نقاط: {points}\n✅ نجاح: {len(used['success'])}")
-        return
-
-    if call.data == "my_referral":
-        link = get_referral_link(user_id)
-        bot.reply_to(call.message, f"🔗 رابطك:\n`{link}`", parse_mode="Markdown")
-        return
-
-    if call.data == "set_referral":
-        msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة:")
-        bot.register_next_step_handler(msg, set_referral_step, user_id)
-        return
-
-    if call.data == "set_start":
-        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
-        bot.register_next_step_handler(msg, set_start_step, user_id)
-        return
-
-    if call.data == "check_sub":
-        ok, _ = check_subscriptions(user_id)
-        if ok:
-            bot.answer_callback_query(call.id, "تم التحقق!", show_alert=True)
+        if call.data == "toggle_mode":
+            mode = attack_mode.get(uid, 'giftcode')
+            new = 'giftsheep' if mode == 'giftcode' else 'giftcode'
+            attack_mode[uid] = new
+            bot.answer_callback_query(call.id, f"تم التبديل إلى {new.upper()}", show_alert=True)
             start_command(call.message)
-        else:
-            bot.answer_callback_query(call.id, "لم تشترك!", show_alert=True)
-        return
-
-    if call.data == "verify_youtube":
-        set_user_setting(user_id, "youtube_verified", True)
-        set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
-        bot.answer_callback_query(call.id, "تم تأكيد يوتيوب!", show_alert=True)
-        start_command(call.message)
-        return
-
-    # ========== أوامر المالك ==========
-    if call.data == "owner_commands":
-        if not is_owner(user_id): return
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            InlineKeyboardButton("🟢 ➕ بروكسي", callback_data="owner_add_proxy"),
-            InlineKeyboardButton("🔵 📋 بروكسيات", callback_data="owner_list_proxies"),
-            InlineKeyboardButton("🔴 🗑️ حذف بروكسي", callback_data="owner_del_proxy"),
-            InlineKeyboardButton("🟡 📈 الإحصائيات", callback_data="owner_stats"),
-            InlineKeyboardButton("🟣 🔧 تعديل النقاط", callback_data="owner_edit_points"),
-            InlineKeyboardButton("⚫ 🔙 رجوع", callback_data="start")
-        )
-        bot.reply_to(call.message, "👑 قائمة المالك:", reply_markup=kb)
-        return
-
-    # ✅ إحصائيات مرتبة
-    if call.data == "owner_stats":
-        if not is_owner(user_id): return
-        sessions = load_user_sessions()
-        if not sessions:
-            bot.reply_to(call.message, "لا يوجد مستخدمون حتى الآن.")
             return
 
-        users_list = []
-        for uid_key, data in sessions.items():
-            try:
-                points = load_user_points(int(uid_key))
-                used = load_used_numbers(int(uid_key))
-            except Exception:
-                continue
-            users_list.append({
-                "uid": uid_key,
-                "name": data.get("first_name", "مجهول"),
-                "username": data.get("username", ""),
-                "points": points,
-                "success": len(used.get("success", [])),
-                "failed": len(used.get("failed", [])),
-                "already": len(used.get("already", [])),
-            })
+        if call.data == "start_attack":
+            if attack_status.get(uid, {}).get("running", False):
+                bot.answer_callback_query(call.id, "يعمل بالفعل!", show_alert=True)
+                return
+            points = load_user_points(user_id)
+            if points <= 0 and not is_owner(user_id):
+                bot.answer_callback_query(call.id, "نقاطك 0!", show_alert=True)
+                return
+            attack_status[uid] = {"running": True}
+            t = threading.Thread(target=attack_loop, args=(user_id, chat_id))
+            t.daemon = True
+            t.start()
+            bot.answer_callback_query(call.id, "تم البدء!", show_alert=True)
+            return
 
-        # ترتيب حسب النقاط من الأعلى للأدنى
-        users_list.sort(key=lambda x: x["points"], reverse=True)
+        if call.data == "stop_attack":
+            if attack_status.get(uid, {}).get("running", False):
+                attack_status[uid]["running"] = False
+                bot.answer_callback_query(call.id, "جاري الإيقاف...", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "لا يوجد هجوم!", show_alert=True)
+            return
 
-        total_points = sum(u["points"] for u in users_list)
-        total_success = sum(u["success"] for u in users_list)
-        total_failed = sum(u["failed"] for u in users_list)
+        if call.data == "status":
+            bot.answer_callback_query(call.id)
+            points = load_user_points(user_id)
+            used = load_used_numbers(user_id)
+            mode = attack_mode.get(uid, 'giftcode')
+            running = attack_status.get(uid, {}).get("running", False)
+            bot.send_message(chat_id, f"📊 الحالة:\n🔄 {mode.upper()}\n▶️ {'يعمل' if running else 'متوقف'}\n💎 نقاط: {points}\n✅ نجاح: {len(used['success'])}")
+            return
 
-        header = (
-            "📈 إحصائيات المشتركين\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"👥 عدد المستخدمين: {len(users_list)}\n"
-            f"💎 مجموع النقاط: {total_points}\n"
-            f"✅ مجموع النجاح: {total_success}\n"
-            f"❌ مجموع الفشل: {total_failed}\n"
-            "━━━━━━━━━━━━━━━\n\n"
-        )
+        if call.data == "my_referral":
+            bot.answer_callback_query(call.id)
+            link = get_referral_link(user_id)
+            bot.reply_to(call.message, f"🔗 رابطك:\n`{link}`", parse_mode="Markdown")
+            return
 
-        body = ""
-        for i, u in enumerate(users_list, 1):
-            body += f"{i}. 👤 {u['name']}"
-            if u["username"]:
-                body += f" (@{u['username']})"
-            body += f"\n     🆔 {u['uid']}\n"
-            body += f"     💎 {u['points']}  |  ✅ {u['success']}  |  ❌ {u['failed']}  |  🔁 {u['already']}\n\n"
+        if call.data == "set_referral":
+            bot.answer_callback_query(call.id)
+            msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة:")
+            bot.register_next_step_handler(msg, set_referral_step, user_id)
+            return
 
-        full = header + body
-        # تقسيم لو طويل
-        max_len = 4000
-        if len(full) <= max_len:
-            bot.send_message(chat_id, full)
-        else:
-            bot.send_message(chat_id, header)
-            chunk = ""
-            for line in body.split("\n"):
-                if len(chunk) + len(line) + 1 > max_len:
+        if call.data == "set_start":
+            bot.answer_callback_query(call.id)
+            msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
+            bot.register_next_step_handler(msg, set_start_step, user_id)
+            return
+
+        if call.data == "check_sub":
+            ok, _ = check_subscriptions(user_id)
+            if ok:
+                bot.answer_callback_query(call.id, "تم التحقق!", show_alert=True)
+                start_command(call.message)
+            else:
+                bot.answer_callback_query(call.id, "لم تشترك!", show_alert=True)
+            return
+
+        if call.data == "verify_youtube":
+            set_user_setting(user_id, "youtube_verified", True)
+            set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
+            bot.answer_callback_query(call.id, "تم تأكيد يوتيوب!", show_alert=True)
+            start_command(call.message)
+            return
+
+        # 🔙 رجوع من قائمة المالك
+        if call.data == "start":
+            bot.answer_callback_query(call.id)
+            start_command(call.message)
+            return
+
+        # ========== أوامر المالك ==========
+        if call.data == "owner_commands":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "هذه القائمة للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                btn("➕ إضافة بروكسي", callback_data="owner_add_proxy", style="success"),
+                btn("📋 قائمة البروكسيات", callback_data="owner_list_proxies", style="primary"),
+            )
+            kb.add(
+                btn("🗑️ حذف بروكسي", callback_data="owner_del_proxy", style="danger"),
+                btn("📈 الإحصائيات", callback_data="owner_stats", style="primary"),
+            )
+            kb.add(
+                btn("🔧 تعديل النقاط", callback_data="owner_edit_points", style="success"),
+                btn("🔙 رجوع", callback_data="start", style="danger"),
+            )
+            bot.reply_to(call.message, "👑 قائمة المالك:", reply_markup=kb)
+            return
+
+        if call.data == "owner_stats":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            sessions = load_user_sessions()
+            if not sessions:
+                bot.reply_to(call.message, "لا يوجد مستخدمون حتى الآن.")
+                return
+
+            users_list = []
+            for uid_key, data in sessions.items():
+                try:
+                    points = load_user_points(int(uid_key))
+                    used = load_used_numbers(int(uid_key))
+                except Exception:
+                    continue
+                users_list.append({
+                    "uid": uid_key,
+                    "name": data.get("first_name", "مجهول"),
+                    "username": data.get("username", ""),
+                    "points": points,
+                    "success": len(used.get("success", [])),
+                    "failed": len(used.get("failed", [])),
+                    "already": len(used.get("already", [])),
+                })
+
+            users_list.sort(key=lambda x: x["points"], reverse=True)
+
+            total_points = sum(u["points"] for u in users_list)
+            total_success = sum(u["success"] for u in users_list)
+            total_failed = sum(u["failed"] for u in users_list)
+
+            header = (
+                "📈 إحصائيات المشتركين\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"👥 عدد المستخدمين: {len(users_list)}\n"
+                f"💎 مجموع النقاط: {total_points}\n"
+                f"✅ مجموع النجاح: {total_success}\n"
+                f"❌ مجموع الفشل: {total_failed}\n"
+                "━━━━━━━━━━━━━━━\n\n"
+            )
+
+            body = ""
+            for i, u in enumerate(users_list, 1):
+                body += f"{i}. 👤 {u['name']}"
+                if u["username"]:
+                    body += f" (@{u['username']})"
+                body += f"\n     🆔 {u['uid']}\n"
+                body += f"     💎 {u['points']}  |  ✅ {u['success']}  |  ❌ {u['failed']}  |  🔁 {u['already']}\n\n"
+
+            full = header + body
+            max_len = 4000
+            if len(full) <= max_len:
+                bot.send_message(chat_id, full)
+            else:
+                bot.send_message(chat_id, header)
+                chunk = ""
+                for line in body.split("\n"):
+                    if len(chunk) + len(line) + 1 > max_len:
+                        bot.send_message(chat_id, chunk)
+                        chunk = ""
+                    chunk += line + "\n"
+                if chunk.strip():
                     bot.send_message(chat_id, chunk)
-                    chunk = ""
-                chunk += line + "\n"
-            if chunk.strip():
-                bot.send_message(chat_id, chunk)
-        return
+            return
 
-    if call.data == "owner_edit_points":
-        if not is_owner(user_id): return
-        bot.send_message(
-            chat_id,
-            "🔧 تعديل نقاط مستخدم\n"
-            "━━━━━━━━━━━━━━━\n"
-            "أرسل بالصيغة التالية:\n"
-            "`@username النقاط`\n"
-            "أو\n"
-            "`user_id النقاط`\n\n"
-            "مثال:\n"
-            "`@ali 100`\n"
-            "`6366853738 100`",
-            parse_mode="Markdown"
-        )
-        bot.register_next_step_handler(call.message, edit_points_step)
-        return
+        if call.data == "owner_edit_points":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            bot.send_message(
+                chat_id,
+                "🔧 تعديل نقاط مستخدم\n"
+                "━━━━━━━━━━━━━━━\n"
+                "أرسل بالصيغة التالية:\n"
+                "`@username النقاط`\n"
+                "أو\n"
+                "`user_id النقاط`\n\n"
+                "مثال:\n"
+                "`@ali 100`\n"
+                "`6366853738 100`",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(call.message, edit_points_step)
+            return
 
-    if call.data == "owner_add_proxy":
-        if not is_owner(user_id): return
-        msg = bot.send_message(chat_id, "أرسل البروكسي:")
-        bot.register_next_step_handler(msg, add_proxy_step)
-        return
+        if call.data == "owner_add_proxy":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            msg = bot.send_message(chat_id, "أرسل البروكسي (http://user:pass@ip:port):")
+            bot.register_next_step_handler(msg, add_proxy_step)
+            return
 
-    if call.data == "owner_list_proxies":
-        if not is_owner(user_id): return
-        proxies = get_all_proxies()
-        bot.reply_to(call.message, "\n".join(proxies) if proxies else "لا يوجد")
-        return
+        if call.data == "owner_list_proxies":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            proxies = get_all_proxies()
+            bot.reply_to(call.message, "\n".join(proxies) if proxies else "لا يوجد بروكسيات.")
+            return
 
-    if call.data == "owner_del_proxy":
-        if not is_owner(user_id): return
-        msg = bot.send_message(chat_id, "أرسل البروكسي للحذف:")
-        bot.register_next_step_handler(msg, del_proxy_step)
-        return
+        if call.data == "owner_del_proxy":
+            if not is_owner(user_id):
+                bot.answer_callback_query(call.id, "للمالك فقط.", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            msg = bot.send_message(chat_id, "أرسل البروكسي للحذف:")
+            bot.register_next_step_handler(msg, del_proxy_step)
+            return
+
+        # أي callback غير معروف
+        bot.answer_callback_query(call.id)
+
+    except Exception as e:
+        print(f"⚠️ خطأ في معالجة الزر: {e}")
+        try:
+            bot.answer_callback_query(call.id)
+        except:
+            pass
 
 # ============================================
 # 📝 خطوات نصية
@@ -788,7 +833,7 @@ def user_add_proxy_step(message, user_id):
         save_user_proxies(user_proxies)
         try:
             bot.send_message(OWNER_ID, f"🔐 بروكسي جديد من {message.from_user.first_name} (ID: {user_id}):\n`{proxy}`", parse_mode="Markdown")
-        except Exception:
+        except:
             pass
         bot.reply_to(message, "✅ تمت إضافة البروكسي!")
     else:
@@ -805,7 +850,7 @@ def add_proxy_step(message):
         save_proxies(proxies)
         bot.reply_to(message, "✅ تمت الإضافة.")
     else:
-        bot.reply_to(message, "موجود.")
+        bot.reply_to(message, "موجود مسبقاً.")
 
 def del_proxy_step(message):
     if not is_owner(message.from_user.id): return
@@ -815,27 +860,25 @@ def del_proxy_step(message):
         proxies.remove(proxy)
         save_proxies(proxies)
         bot.reply_to(message, "✅ تم الحذف.")
+    else:
+        bot.reply_to(message, "❌ غير موجود.")
 
-# ✅ تعديل النقاط باليوزر أو ID
 def edit_points_step(message):
     if not is_owner(message.from_user.id): return
     parts = message.text.split()
     if len(parts) != 2:
         bot.reply_to(message, "❌ الصيغة: `@username النقاط` أو `user_id النقاط`", parse_mode="Markdown")
         return
-
     identifier = parts[0]
     try:
         new_points = int(parts[1])
     except:
         bot.reply_to(message, "❌ النقاط يجب أن تكون رقماً.")
         return
-
     target_id = find_user_id_by_input(identifier)
     if not target_id:
         bot.reply_to(message, f"❌ لم أجد مستخدماً بالمعرف: {identifier}\nتأكد أن المستخدم استخدم /start مرة على الأقل.")
         return
-
     save_user_points(target_id, new_points)
     display = get_user_display(target_id)
     bot.reply_to(
@@ -848,7 +891,7 @@ def edit_points_step(message):
     )
 
 # ============================================
-# 🖥️ تشغيل Flask
+# 🖥️ Flask
 # ============================================
 app = Flask(__name__)
 
@@ -863,20 +906,22 @@ def health():
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
+# ============================================
+# ▶️ التشغيل
+# ============================================
 if __name__ == "__main__":
-    # ✅ حذف الويب هوك تلقائياً عند كل تشغيل (حل مشكلة 409 نهائياً)
     try:
         bot.remove_webhook()
-        print("✅ تم حذف الويب هوك بنجاح.")
+        print("✅ تم حذف الويب هوك.")
     except Exception as e:
-        print(f"⚠️ تحذير عند حذف الويب هوك: {e}")
+        print(f"⚠️ {e}")
 
     threading.Thread(target=run_flask, daemon=True).start()
-    print("✅ البوت يعمل الآن!")
+    print("✅ البوت يعمل!")
 
     while True:
         try:
             bot.polling(none_stop=True, interval=1, timeout=30)
         except Exception as e:
-            print(f"⚠️ خطأ في polling: {e} — إعادة المحاولة بعد 5 ثوانٍ...")
+            print(f"⚠️ خطأ: {e} — إعادة المحاولة بعد 5 ثوانٍ...")
             time.sleep(5)
