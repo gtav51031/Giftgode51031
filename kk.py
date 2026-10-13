@@ -1,1342 +1,2143 @@
-import os  # ✅ تم إضافة هذه المكتبة للتعامل مع البيئة
-import telebot
-import requests
-import json
-import time
-import random
-import threading
+#!/usr/bin/env python3
+# kk.py — Main bot, translated, smart proxy selection, batch add, proxy help
+import os, sys, json, time, random, sqlite3, threading, uuid, csv, io, logging, html
 from datetime import datetime, timedelta
+from collections import defaultdict, deque
+from queue import PriorityQueue
+import requests, telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask, jsonify
 
-# ============================================
-# 🔐 إعدادات البوت الأساسية (محمية بالبيئة)
-# ============================================
-# ✅ الآن يقرأ التوكنات من البيئة أولاً، فإن لم يجدها يستخدم القيم الافتراضية (الخاصة بك)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M")
-OWNER_ID = int(os.environ.get("OWNER_ID", 6366853738))
-CHANNEL_TG = os.environ.get("CHANNEL_TG", "thaish12")
-CHANNEL_YT = os.environ.get("CHANNEL_YT", "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s")
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "Rame124673_bot")
-TOKEN_API = os.environ.get("TOKEN_API", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJndGF2NTEwMzFAZ21haWwuY29tIn0.LR0lbOdO6Qq5d_4X0jKUC6mx18PP1-w2ChvBXQTETw0")
+# ═══════════════════════ CONFIG ═══════════════════════
+MAIN_BOT_TOKEN     = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
+OWNER_ID = 6366853738
+CHANNEL_TG = "thaish12"
+CHANNEL_YT = "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s"
+BOT_USERNAME = "Rame124673_bot"
 
-INITIAL_POINTS = 50
-ATTACK_DELAY = 0.1
-YOUTUBE_VERIFY_KEY = "youtube_verified"
-YOUTUBE_VERIFY_DAYS = 7
-EXTRA_CHANNELS_FILE = "extra_channels.json"
+INITIAL_POINTS = 20
+REFERRAL_POINTS = 10
+DAILY_BASE = 5
+DAILY_STREAK_BONUS = 2
+DAILY_STREAK_MAX = 10
 
-# ============================================
-# 👥 المستخدمون النشطون
-# ============================================
-active_users = {}
-
-def update_user_activity(user_id):
-    active_users[user_id] = time.time()
-
-def get_active_users():
-    now = time.time()
-    active_list = []
-    for uid, last_time in list(active_users.items()):
-        if now - last_time < 300:
-            active_list.append((uid, last_time))
-        else:
-            del active_users[uid]
-    active_list.sort(key=lambda x: x[1], reverse=True)
-    return active_list
-
-def format_time_ago(timestamp):
-    seconds = int(time.time() - timestamp)
-    if seconds < 60:
-        return f"منذ {seconds} ثانية"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"منذ {minutes} دقيقة"
-    hours = minutes // 60
-    return f"منذ {hours} ساعة"
-
-# ============================================
-# 📂 ملفات البيانات
-# ============================================
+DB_FILE = "bot.db"
+OLD_DATA_DIR = "user_data"
 PROXIES_FILE = "proxies.txt"
-DEAD_PROXIES_FILE = "dead_proxies.txt"
-DATA_DIR = "user_data"
+AUDIT_LOG = "audit.log"
+WORKERS = 2
+RATE_LIMIT_PER_MIN = 30
 
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+GC_BASE_URL   = "https://giftcode.betelgeuse.app"
+GC_LEADERS    = f"{GC_BASE_URL}/api/leaders"
+GC_REFER      = f"{GC_BASE_URL}/api/referrer"
+GC_REF_CODE   = "4094894"
+GC_TOKEN      = os.getenv("GC_TOKEN", "")
+GC_AUTO_INTERVAL   = 1800
 
-def get_user_file(user_id, filename):
-    return os.path.join(DATA_DIR, f"{filename}_{user_id}.json")
+# ═══════════════════════ LOGGING ═══════════════════════
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S')
+log = logging.getLogger("bot")
 
-# ============================================
-# ✅ دالة تحميل النقاط التلقائية
-# ============================================
-def load_user_points(user_id):
-    used = load_used_numbers(user_id)
-    successes = len(used.get("success", []))
-    correct_points = max(0, INITIAL_POINTS - successes)
+# ═══════════════════════ DB ═══════════════════════
+_db_lock = threading.Lock()
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+conn.row_factory = sqlite3.Row
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA synchronous=NORMAL")
 
-    filepath = get_user_file(user_id, "points")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            data = json.load(f)
-            current_points = data.get("points", INITIAL_POINTS)
-            if current_points != correct_points:
-                save_user_points(user_id, correct_points)
-            return correct_points
+
+def _init_db():
+    with _db_lock:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users(
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT DEFAULT '',
+            username TEXT DEFAULT '',
+            lang TEXT DEFAULT 'ar',
+            points INTEGER DEFAULT 50,
+            streak INTEGER DEFAULT 0,
+            last_daily TEXT DEFAULT '',
+            youtube_verified INTEGER DEFAULT 0,
+            youtube_date TEXT DEFAULT '',
+            referral_code TEXT DEFAULT '4094894',
+            start_number INTEGER DEFAULT 4084879,
+            mode TEXT DEFAULT 'giftcode',
+            banned INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, mode TEXT, target TEXT,
+            result TEXT, proxy TEXT,
+            ts TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS ix_hist_u ON history(user_id);
+        CREATE INDEX IF NOT EXISTS ix_hist_ts ON history(ts);
+        CREATE TABLE IF NOT EXISTS proxies(
+            proxy TEXT PRIMARY KEY,
+            owner INTEGER DEFAULT 0,
+            success INTEGER DEFAULT 0,
+            fail INTEGER DEFAULT 0,
+            banned INTEGER DEFAULT 0,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS referrals(
+            new_user INTEGER PRIMARY KEY,
+            referrer INTEGER,
+            ts TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY, value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS seen_ids(
+            uid TEXT PRIMARY KEY,
+            ref_code TEXT,
+            result TEXT,
+            ts TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        conn.commit()
+
+
+def db_exec(query, params=(), fetch=None):
+    with _db_lock:
+        cur = conn.execute(query, params)
+        if fetch == "one":
+            r = cur.fetchone(); conn.commit(); return r
+        if fetch == "all":
+            r = cur.fetchall(); conn.commit(); return r
+        conn.commit()
+        return cur
+
+
+def ensure_user(user_id, first_name="", username=""):
+    r = db_exec("SELECT user_id FROM users WHERE user_id=?", (user_id,), "one")
+    if not r:
+        db_exec("INSERT INTO users(user_id,first_name,username,points) VALUES(?,?,?,?)",
+                (user_id, first_name, username, INITIAL_POINTS))
     else:
-        save_user_points(user_id, correct_points)
-        return correct_points
+        db_exec("UPDATE users SET first_name=?, username=? WHERE user_id=?",
+                (first_name, username, user_id))
 
-def save_user_points(user_id, points):
-    filepath = get_user_file(user_id, "points")
-    with open(filepath, "w") as f:
-        json.dump({"points": points}, f)
 
-def load_used_numbers(user_id):
-    filepath = get_user_file(user_id, "used_numbers")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            data = json.load(f)
-            data.setdefault("success", [])
-            data.setdefault("failed", [])
-            data.setdefault("already", [])
-            return data
-    return {"success": [], "failed": [], "already": []}
+def get_user(user_id):
+    return db_exec("SELECT * FROM users WHERE user_id=?", (user_id,), "one")
 
-def save_used_numbers(user_id, data):
-    filepath = get_user_file(user_id, "used_numbers")
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
 
-def load_user_sessions():
-    filepath = os.path.join(DATA_DIR, "user_sessions.json")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return json.load(f)
-    return {}
+def set_user(user_id, **kw):
+    if not kw: return
+    cols = ", ".join(f"{k}=?" for k in kw)
+    db_exec(f"UPDATE users SET {cols} WHERE user_id=?", (*kw.values(), user_id))
 
-def save_user_sessions(sessions):
-    filepath = os.path.join(DATA_DIR, "user_sessions.json")
-    with open(filepath, "w") as f:
-        json.dump(sessions, f, indent=2)
 
-def load_user_settings(user_id):
-    filepath = get_user_file(user_id, "user_settings")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return json.load(f)
-    return {}
+def add_points(user_id, delta):
+    db_exec("UPDATE users SET points=points+? WHERE user_id=?", (delta, user_id))
 
-def save_user_settings(user_id, data):
-    filepath = get_user_file(user_id, "user_settings")
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
 
-# ============================================
-# 📦 دوال البروكسيات (تم إصلاح التنسيق التلقائي)
-# ============================================
-BACKUP_PROXIES = [
-    "http://20.78.118.91:8561", "http://20.27.11.248:8561", "http://8.215.25.3:2080",
-]
+def get_points(user_id):
+    r = db_exec("SELECT points FROM users WHERE user_id=?", (user_id,), "one")
+    return r["points"] if r else INITIAL_POINTS
 
-def load_proxies():
-    """تحميل البروكسيات مع إصلاح التنسيق تلقائياً (إضافة http:// إذا كانت مفقودة)"""
-    if os.path.exists(PROXIES_FILE):
-        with open(PROXIES_FILE, "r") as f:
-            proxies = [p.strip() for p in f.readlines() if p.strip()]
-            formatted = []
-            for p in proxies:
-                if not p.startswith("http://") and not p.startswith("https://"):
-                    p = f"http://{p}"
-                formatted.append(p)
-            if formatted:
-                return formatted
-    return BACKUP_PROXIES.copy()
 
-def save_proxies(proxies_list):
-    with open(PROXIES_FILE, "w") as f:
-        f.write("\n".join(proxies_list))
+def log_history(user_id, mode, target, result, proxy=""):
+    db_exec("INSERT INTO history(user_id,mode,target,result,proxy) VALUES(?,?,?,?,?)",
+            (user_id, mode, str(target), result, proxy or ""))
 
-def load_dead_proxies():
-    if os.path.exists(DEAD_PROXIES_FILE):
-        with open(DEAD_PROXIES_FILE, "r") as f:
-            return [p.strip() for p in f.readlines() if p.strip()]
-    return []
 
-def save_dead_proxies(dead_list):
-    with open(DEAD_PROXIES_FILE, "w") as f:
-        f.write("\n".join(dead_list))
+def history_stats(user_id):
+    r = db_exec("""SELECT
+        SUM(CASE WHEN result='success' THEN 1 ELSE 0 END) AS s,
+        SUM(CASE WHEN result='failed' THEN 1 ELSE 0 END) AS f,
+        SUM(CASE WHEN result='already' THEN 1 ELSE 0 END) AS a
+        FROM history WHERE user_id=?""", (user_id,), "one")
+    return {"success": r["s"] or 0, "failed": r["f"] or 0, "already": r["a"] or 0}
 
-# ============================================
-# 🎯 إعدادات الإحالات
-# ============================================
-BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
-DEFAULT_START = 4084879
 
-def send_referral(referral_code, user_id, proxy=None):
-    params = {"referred_user_id": str(user_id), "ref_code": str(referral_code)}
-    headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
-    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
+def get_setting(key, default=None):
+    r = db_exec("SELECT value FROM settings WHERE key=?", (key,), "one")
+    return r["value"] if r else default
+
+
+def set_setting(key, value):
+    db_exec("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+            (key, str(value)))
+
+
+def audit(actor, action, target=""):
     try:
-        response = requests.get(BASE_URL, params=params, headers=headers, proxies=proxies_dict, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                return {"success": True, "gold": data.get("referred_gold", 0)}
-            reason = data.get("reason", "")
-            if "Zaten referanslı" in reason:
-                return {"success": False, "reason": "already_referred"}
-            elif "Geçersiz kullanıcı" in reason:
-                return {"success": False, "reason": "invalid_user"}
-            elif "Aynı IP" in reason:
-                return {"success": False, "reason": "same_ip"}
-            else:
-                return {"success": False, "reason": reason}
-        elif response.status_code == 429:
-            return {"success": False, "reason": "rate_limited"}
-        else:
-            return {"success": False, "reason": f"HTTP_{response.status_code}"}
-    except Exception as e:
-        return {"success": False, "reason": "proxy_dead", "error": str(e)}
+        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | {actor} | {action} | {target}\n")
+    except Exception:
+        pass
 
-# ============================================
-# 🗂️ دوال القنوات الإضافية
-# ============================================
-def load_extra_channels():
-    if os.path.exists(EXTRA_CHANNELS_FILE):
-        with open(EXTRA_CHANNELS_FILE, "r") as f:
-            return json.load(f)
-    return []
 
-def save_extra_channels(channels):
-    with open(EXTRA_CHANNELS_FILE, "w") as f:
-        json.dump(channels, f, indent=2)
-
-def is_subscribed_extra(user_id):
-    extra_channels = load_extra_channels()
-    for channel in extra_channels:
+# ═══════════ MIGRATION + REIMPORT ═══════════
+def migrate_legacy():
+    if not os.path.isdir(OLD_DATA_DIR):
+        return
+    done = get_setting("migrated")
+    if done:
+        return
+    migrated = 0
+    for fn in os.listdir(OLD_DATA_DIR):
         try:
-            chat_member = bot.get_chat_member(f"@{channel}", user_id)
-            if chat_member.status not in ["member", "administrator", "creator"]:
-                return False, channel
-        except:
-            return False, channel
-    return True, None
+            if fn.startswith("points_") and fn.endswith(".json"):
+                uid = int(fn.replace("points_", "").replace(".json", ""))
+                with open(os.path.join(OLD_DATA_DIR, fn), encoding="utf-8") as f:
+                    pts = json.load(f).get("points", INITIAL_POINTS)
+                ensure_user(uid)
+                set_user(uid, points=pts)
+                migrated += 1
+            elif fn == "user_sessions.json":
+                with open(os.path.join(OLD_DATA_DIR, fn), encoding="utf-8") as f:
+                    data = json.load(f)
+                for uid, s in data.items():
+                    ensure_user(int(uid), s.get("first_name", ""),
+                                s.get("username", ""))
+        except Exception as e:
+            log.warning(f"migrate {fn}: {e}")
+    set_setting("migrated", migrated)
+    log.info(f"Migrated {migrated} users from JSON")
 
-# ============================================
-# 👤 نظام الإحالة الداخلي (المُصحح)
-# ============================================
-def load_referral_data():
-    filepath = os.path.join(DATA_DIR, "referral_data.json")
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return json.load(f)
-    return {}
 
-def save_referral_data(data):
-    filepath = os.path.join(DATA_DIR, "referral_data.json")
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
+def reimport_sessions(verbose=False):
+    if not os.path.isdir(OLD_DATA_DIR):
+        return 0, 0
+    added_users = 0
+    added_points = 0
 
-def get_referral_link(user_id):
-    """توليد رابط الإحالة الصحيح الخاص بالمستخدم"""
-    return f"https://t.me/{BOT_USERNAME}?start={user_id}"
+    sp = os.path.join(OLD_DATA_DIR, "user_sessions.json")
+    if os.path.exists(sp):
+        try:
+            with open(sp, encoding="utf-8") as f:
+                data = json.load(f)
+            for uid_str, s in data.items():
+                try:
+                    uid = int(uid_str)
+                except Exception:
+                    continue
+                existing = db_exec(
+                    "SELECT user_id, first_name, username FROM users WHERE user_id=?",
+                    (uid,), "one")
+                if not existing:
+                    ensure_user(uid, s.get("first_name", "") or "",
+                                s.get("username", "") or "")
+                    added_users += 1
+                else:
+                    upd = {}
+                    if not existing["first_name"] and s.get("first_name"):
+                        upd["first_name"] = s["first_name"]
+                    if not existing["username"] and s.get("username"):
+                        upd["username"] = s["username"]
+                    if upd:
+                        set_user(uid, **upd)
+        except Exception as e:
+            log.warning(f"reimport sessions: {e}")
 
-def process_referral_new_user(new_user_id, referrer_id):
-    """معالجة الإحالة بعد التأكد من الاشتراك في القناة"""
-    if str(new_user_id) == str(referrer_id):
-        return False, "❌ لا يمكنك إحالة نفسك!"
+    for fn in os.listdir(OLD_DATA_DIR):
+        if not (fn.startswith("points_") and fn.endswith(".json")):
+            continue
+        try:
+            uid = int(fn.replace("points_", "").replace(".json", ""))
+        except Exception:
+            continue
+        try:
+            with open(os.path.join(OLD_DATA_DIR, fn), encoding="utf-8") as f:
+                pts = json.load(f).get("points", INITIAL_POINTS)
+        except Exception:
+            continue
+        existing = db_exec("SELECT user_id FROM users WHERE user_id=?",
+                           (uid,), "one")
+        if not existing:
+            ensure_user(uid)
+            set_user(uid, points=pts)
+            added_points += 1
 
-    if not is_subscribed_telegram(new_user_id):
-        return False, "❌ يجب الاشتراك في قناة التلجرام أولاً!"
+    if verbose:
+        log.info(f"reimport: +{added_users} users, +{added_points} points")
+    return added_users, added_points
 
-    referral_data = load_referral_data()
 
-    if str(new_user_id) in referral_data.get("referred_users", {}):
-        return False, "⚠️ هذا المستخدم تمت إحالته مسبقاً!"
+# ═══════════════════════ I18N ═══════════════════════
+T = {
+    "ar": {
+        "welcome": "✨ مرحباً {name}!",
+        "points": "نقاطك", "code": "كودك", "mode": "وضع",
+        "start_num": "رقم البداية",
+        "success": "نجاح", "choose": "اختر من القائمة:",
+        "not_sub": "🔒 اشترك وأكد يوتيوب.", "sub_first": "اشترك أولاً.",
+        "start_attack": "▶️ بدء", "stop_attack": "⏹️ إيقاف",
+        "toggle_mode": "🔄 تبديل الوضع", "status": "📊 الحالة",
+        "referral": "🔗 رابط الإحالة", "add_proxy": "➕ إضافة بروكسي",
+        "proxy_help_btn": "📘 تعليمات البروكسي",
+        "owner": "👑 المالك", "set_referral": "🔑 كود الإحالة",
+        "set_start": "🔢 رقم البداية", "daily": "🎁 هدية يومية",
+        "leaderboard": "🏆 المتصدرون", "quick_menu": "⌨️ قائمة سريعة",
+        "my_stats": "📊 إحصائياتي", "lang": "🌐 اللغة",
+        "gc_panel_btn": "🎯 لوحة GiftCode",
+        "refs_btn": "🏅 المتصدرون بالإحالة",
 
-    if str(referrer_id) not in referral_data.get("referrals", {}):
-        referral_data.setdefault("referrals", {})[str(referrer_id)] = {
-            "count": 0,
-            "points_earned": 0,
-            "users": []
-        }
+        "gc_panel_title": "🎯 <b>لوحة GiftCode</b>\nاختر من القائمة:",
+        "gc_top_gold": "🥇 متصدرون الذهب",
+        "gc_top_diamond": "💎 متصدرون الألماس",
+        "gc_tasks": "📋 آخر المهام",
+        "gc_top_refs": "🏅 المتصدرون بالإحالة",
+        "gc_harvest": "🎯 مسح الإحالات",
+        "back": "🔙 رجوع",
 
-    referral_data["referrals"][str(referrer_id)]["count"] += 1
-    referral_data["referrals"][str(referrer_id)]["points_earned"] += 10
-    referral_data["referrals"][str(referrer_id)]["users"].append(str(new_user_id))
-    referral_data.setdefault("referred_users", {})[str(new_user_id)] = str(referrer_id)
-    save_referral_data(referral_data)
+        "gold_lb_title": "🏆 <b>أعلى اللاعبين — الذهب (GP)</b>",
+        "diamond_lb_title": "💎 <b>أعلى اللاعبين — الألماس</b>",
+        "tasks_title": "📋 <b>آخر المهام المكتملة</b>",
+        "refs_title": "🏅 <b>أكثر المُحيلين</b>",
+        "no_gold": "🏆 <b>لا يوجد متصدرون حالياً.</b>",
+        "no_diamond": "💎 <b>لا توجد بيانات.</b>",
+        "no_tasks": "📭 <b>لا توجد مهام حديثة.</b>",
+        "no_refs": "🏅 <b>لا توجد إحالات بعد.</b>",
 
-    current_points = load_user_points(referrer_id)
-    save_user_points(referrer_id, current_points + 10)
-    save_user_points(new_user_id, INITIAL_POINTS)
+        "owner_panel": "👑 <b>لوحة المالك</b>",
+        "owner_add_proxy": "➕ بروكسي",
+        "owner_list_proxies": "📋 القائمة",
+        "owner_test_proxies": "🧪 اختبار",
+        "owner_del_proxy": "🗑️ حذف",
+        "owner_stats": "📈 إحصائيات",
+        "owner_edit_points": "🔧 نقاط",
+        "owner_broadcast": "📢 بث",
+        "owner_live": "📡 مباشر",
+        "owner_estop": "🛑 إيقاف طارئ",
 
-    return True, f"✅ تمت الإحالة بنجاح! حصلت على 10 نقاط."
+        "cancel": "❌ إلغاء",
+        "canceled": "❌ ملغي",
+        "fetching": "⏳ جلب...",
+        "fetch_failed": "❌ فشل الجلب: {err}",
+        "owner_only": "للمالك فقط",
+        "banned": "🚫 محظور",
+        "rate_limit": "⚠️ تمهل",
+        "not_subscribed": "❌ لم تشترك",
+        "done": "✅ تم",
+        "youtube_ok": "✅ يوتيوب",
 
-def get_referral_stats(user_id):
-    referral_data = load_referral_data()
-    stats = referral_data.get("referrals", {}).get(str(user_id), {"count": 0, "points_earned": 0})
-    return stats["count"], stats["points_earned"]
+        "status_on": "ON", "status_off": "OFF",
+        "no_points": "💎 0 نقاط",
+        "already_running": "يعمل بالفعل",
+        "attack_started": "▶️ بدأ",
+        "stopping": "⏹️ جاري الإيقاف",
+        "no_proxies": ("⚠️ <b>لا توجد بروكسيات في القائمة</b>\n"
+                       "━━━━━━━━━━━━━━━\n"
+                       "يعمل البوت حالياً <b>باتصال مباشر</b> — النتائج ستكون محدودة.\n\n"
+                       "💡 <b>لتحسين النتائج:</b> أضف بروكسي من الزر «➕ إضافة بروكسي»."),
+        "send_proxy": "🔐 أرسل البروكسي:",
+        "send_referral": "🔑 أرسل كود الإحالة:",
+        "send_start": "🔢 أرسل رقم البداية:",
 
-# ============================================
-# 🤖 دوال البوت الأساسية
-# ============================================
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-proxies = load_proxies()
-dead_proxies = load_dead_proxies()
+        "daily_claimed": "⏰ استلمتها اليوم",
+        "daily_reward": "🎁 +{reward} نقطة\n🔥 يوم {streak}",
+        "stats_title": "📊 إحصائياتك",
+        "lb_title": "🏆 <b>المتصدرون — أفضل 10</b>",
+        "nothing": "لا يوجد",
+        "edit_points_hint": "🔧 @user points أو uid points",
+        "broadcast_hint": "📢 أرسل نص الإعلان:",
+        "owner_add_proxy_hint": "أرسل البروكسي (سطر لكل بروكسي):",
+        "owner_del_proxy_hint": "أرسل البروكسي للحذف:",
+        "proxy_added": "✅ تمت",
+        "proxy_exists": "موجود",
+        "numbers_only": "❌ أرقام فقط",
+        "wrong_format": "صيغة خاطئة",
+        "harvesting": "بدأ المسح...",
+        "harvest_busy": "⏳ مسح آخر يعمل",
+        "harvest_done": ("✅ انتهى المسح\n"
+                          "✅ نجح: {ok}\n"
+                          "🚫 IP محد: {ip}\n"
+                          "🔁 مُحال: {already}\n"
+                          "❌ غير صالح: {invalid}\n"
+                          "⏭️ متجاوز: {skipped}\n"
+                          "💰 Gold: {gold}"),
+        "err_generic": "❌ خطأ: {err}",
 
-def is_owner(user_id):
-    return str(user_id) == str(OWNER_ID)
+        "proxy_help_text": (
+            "📘 <b>دليل إضافة البروكسيات</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🎯 <b>الصيغ المدعومة:</b>\n"
+            "• <code>IP:PORT</code>\n"
+            "• <code>user:pass@IP:PORT</code>\n"
+            "• <code>http://IP:PORT</code>\n"
+            "• <code>http://user:pass@IP:PORT</code>\n\n"
+            "⚠️ <b>HTTP فقط</b> — لا SOCKS\n\n"
+            "📥 <b>الإضافة بالجملة:</b>\n"
+            "أرسل كل بروكسي في <b>سطر منفصل</b>:\n\n"
+            "<code>192.168.1.1:8080\n"
+            "10.0.0.5:3128\n"
+            "172.16.0.3:8000</code>\n\n"
+            "✅ = تُضاف كلها دفعة واحدة\n"
+            "❌ = لا مسافات، لا فواصل\n\n"
+            "🌐 <b>مواقع بروكسيات مجانية:</b>\n"
+            "• free-proxy-list.net\n"
+            "• proxyscrape.com\n"
+            "• geonode.com/free-proxy-list\n"
+            "• proxy-list.download\n\n"
+            "💡 <b>نصائح:</b>\n"
+            "• اختر <b>HTTP</b> و <b>Elite</b>\n"
+            "• أضف 100+ للحصول على 10-20 عاملة\n"
+            "• المجانية تعيش ساعات — البوت يصفّي الميتة تلقائياً\n"
+            "• كلما زاد العدد → زادت النجاحات"),
+    },
+    "en": {
+        "welcome": "✨ Welcome {name}!",
+        "points": "Points", "code": "Code", "mode": "Mode",
+        "start_num": "Start number",
+        "success": "Success", "choose": "Choose:",
+        "not_sub": "🔒 Subscribe & verify YouTube.", "sub_first": "Subscribe first.",
+        "start_attack": "▶️ Start", "stop_attack": "⏹️ Stop",
+        "toggle_mode": "🔄 Toggle Mode", "status": "📊 Status",
+        "referral": "🔗 Referral Link", "add_proxy": "➕ Add Proxy",
+        "proxy_help_btn": "📘 Proxy Guide",
+        "owner": "👑 Owner", "set_referral": "🔑 Referral Code",
+        "set_start": "🔢 Start Number", "daily": "🎁 Daily Gift",
+        "leaderboard": "🏆 Leaderboard", "quick_menu": "⌨️ Quick Menu",
+        "my_stats": "📊 My Stats", "lang": "🌐 Language",
+        "gc_panel_btn": "🎯 GiftCode Panel",
+        "refs_btn": "🏅 Top Referrers",
 
-def is_subscribed_telegram(user_id):
-    if is_owner(user_id):
+        "gc_panel_title": "🎯 <b>GiftCode Panel</b>\nChoose:",
+        "gc_top_gold": "🥇 Top Gold",
+        "gc_top_diamond": "💎 Top Diamonds",
+        "gc_tasks": "📋 Recent Tasks",
+        "gc_top_refs": "🏅 Top Referrers",
+        "gc_harvest": "🎯 Harvest Referrals",
+        "back": "🔙 Back",
+
+        "gold_lb_title": "🏆 <b>Top Players — Gold (GP)</b>",
+        "diamond_lb_title": "💎 <b>Top Players — Diamonds</b>",
+        "tasks_title": "📋 <b>Recent Completed Tasks</b>",
+        "refs_title": "🏅 <b>Top Referrers</b>",
+        "no_gold": "🏆 <b>No leaderboard yet.</b>",
+        "no_diamond": "💎 <b>No data.</b>",
+        "no_tasks": "📭 <b>No recent tasks.</b>",
+        "no_refs": "🏅 <b>No referrals yet.</b>",
+
+        "owner_panel": "👑 <b>Owner Panel</b>",
+        "owner_add_proxy": "➕ Proxy",
+        "owner_list_proxies": "📋 List",
+        "owner_test_proxies": "🧪 Test",
+        "owner_del_proxy": "🗑️ Delete",
+        "owner_stats": "📈 Stats",
+        "owner_edit_points": "🔧 Points",
+        "owner_broadcast": "📢 Broadcast",
+        "owner_live": "📡 Live",
+        "owner_estop": "🛑 E-Stop",
+
+        "cancel": "❌ Cancel",
+        "canceled": "❌ Canceled",
+        "fetching": "⏳ Fetching...",
+        "fetch_failed": "❌ Fetch failed: {err}",
+        "owner_only": "Owner only",
+        "banned": "🚫 Banned",
+        "rate_limit": "⚠️ Slow down",
+        "not_subscribed": "❌ Not subscribed",
+        "done": "✅ Done",
+        "youtube_ok": "✅ YouTube",
+
+        "status_on": "ON", "status_off": "OFF",
+        "no_points": "💎 0 points",
+        "already_running": "Already running",
+        "attack_started": "▶️ Started",
+        "stopping": "⏹️ Stopping",
+        "no_proxies": ("⚠️ <b>No proxies available</b>\n"
+                       "━━━━━━━━━━━━━━━\n"
+                       "Running with <b>direct connection</b> — limited results.\n\n"
+                       "💡 <b>To improve:</b> add a proxy via «➕ Add Proxy»."),
+        "send_proxy": "🔐 Send the proxy:",
+        "send_referral": "🔑 Send the referral code:",
+        "send_start": "🔢 Send the start number:",
+
+        "daily_claimed": "⏰ Already claimed today",
+        "daily_reward": "🎁 +{reward} points\n🔥 Day {streak}",
+        "stats_title": "📊 Your Stats",
+        "lb_title": "🏆 <b>Leaderboard — Top 10</b>",
+        "nothing": "Nothing",
+        "edit_points_hint": "🔧 @user points or uid points",
+        "broadcast_hint": "📢 Send the broadcast text:",
+        "owner_add_proxy_hint": "Send proxies (one per line):",
+        "owner_del_proxy_hint": "Send the proxy to delete:",
+        "proxy_added": "✅ Added",
+        "proxy_exists": "Already exists",
+        "numbers_only": "❌ Numbers only",
+        "wrong_format": "Wrong format",
+        "harvesting": "Harvest started...",
+        "harvest_busy": "⏳ Harvest already running",
+        "harvest_done": ("✅ Harvest finished\n"
+                          "✅ Success: {ok}\n"
+                          "🚫 IP limited: {ip}\n"
+                          "🔁 Already: {already}\n"
+                          "❌ Invalid: {invalid}\n"
+                          "⏭️ Skipped: {skipped}\n"
+                          "💰 Gold: {gold}"),
+        "err_generic": "❌ Error: {err}",
+
+        "proxy_help_text": (
+            "📘 <b>Proxy Setup Guide</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🎯 <b>Supported formats:</b>\n"
+            "• <code>IP:PORT</code>\n"
+            "• <code>user:pass@IP:PORT</code>\n"
+            "• <code>http://IP:PORT</code>\n"
+            "• <code>http://user:pass@IP:PORT</code>\n\n"
+            "⚠️ <b>HTTP only</b> — no SOCKS\n\n"
+            "📥 <b>Batch add:</b>\n"
+            "Send each proxy on <b>a separate line</b>:\n\n"
+            "<code>192.168.1.1:8080\n"
+            "10.0.0.5:3128\n"
+            "172.16.0.3:8000</code>\n\n"
+            "✅ = all added at once\n"
+            "❌ = no spaces, no commas\n\n"
+            "🌐 <b>Free proxy sites:</b>\n"
+            "• free-proxy-list.net\n"
+            "• proxyscrape.com\n"
+            "• geonode.com/free-proxy-list\n"
+            "• proxy-list.download\n\n"
+            "💡 <b>Tips:</b>\n"
+            "• Pick <b>HTTP</b> + <b>Elite</b>\n"
+            "• Add 100+ to get 10-20 alive\n"
+            "• Free proxies die fast — bot auto-filters dead ones\n"
+            "• More proxies → more success"),
+    },
+}
+
+
+def tr(uid, key, **kw):
+    u = get_user(uid)
+    lang = u["lang"] if u else "ar"
+    s = T.get(lang, T["ar"]).get(key, key)
+    return s.format(**kw) if kw else s
+
+
+# ═══════════════════════ RATE LIMIT ═══════════════════════
+_rl = defaultdict(deque)
+
+
+def rate_limited(uid, limit=RATE_LIMIT_PER_MIN):
+    now = time.time()
+    dq = _rl[uid]
+    while dq and now - dq[0] > 60:
+        dq.popleft()
+    if len(dq) >= limit:
         return True
+    dq.append(now)
+    return False
+
+
+# ═══════════════════════ PROXIES ═══════════════════════
+def load_file_proxies(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+
+
+def add_proxy(proxy, owner=0):
+    if not proxy.startswith("http"):
+        proxy = f"http://{proxy}"
     try:
-        chat_member = bot.get_chat_member(f"@{CHANNEL_TG}", user_id)
-        return chat_member.status in ["member", "administrator", "creator"]
-    except:
+        db_exec("INSERT OR IGNORE INTO proxies(proxy,owner) VALUES(?,?)", (proxy, owner))
+        return True
+    except Exception:
         return False
 
-def is_subscribed_youtube(user_id):
-    if is_owner(user_id):
-        return True
-    data = load_user_settings(user_id)
-    verified = data.get(YOUTUBE_VERIFY_KEY, False)
-    if verified:
-        last_verify = data.get("youtube_verify_date")
-        if last_verify:
-            try:
-                days_passed = (datetime.now() - datetime.fromisoformat(last_verify)).days
-                if days_passed > YOUTUBE_VERIFY_DAYS:
-                    return False
-            except:
-                return False
-    return verified
 
-def check_all_subscriptions(user_id):
-    if is_owner(user_id):
+def del_proxy(proxy):
+    db_exec("DELETE FROM proxies WHERE proxy=?", (proxy,))
+
+
+def all_proxies(owner=None):
+    """owner=None → كل | owner=uid → العامة + الخاصة به. (db_exec يقفل داخلياً — لا deadlock)."""
+    file_p = load_file_proxies(PROXIES_FILE)
+
+    if owner is None:
+        rows = db_exec("SELECT proxy FROM proxies WHERE banned=0", fetch="all")
+    else:
+        rows = db_exec(
+            "SELECT proxy FROM proxies WHERE banned=0 AND (owner=0 OR owner=?)",
+            (owner,), "all")
+    db_p = [r["proxy"] for r in rows]
+
+    seen = set()
+    out = []
+    for p in file_p + db_p:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def test_proxy(proxy, timeout=6):
+    try:
+        r = requests.get("https://httpbin.org/ip",
+                         proxies={"http": proxy, "https": proxy}, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def batch_test(proxies, workers=20):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        results = list(ex.map(test_proxy, proxies))
+    return [p for p, ok in zip(proxies, results) if ok]
+
+
+def proxy_score(proxy, success):
+    if not proxy:
+        return
+    col = "success" if success else "fail"
+    db_exec(f"UPDATE proxies SET {col}={col}+1 WHERE proxy=?", (proxy,))
+
+
+def best_proxies(n=30, owner=None):
+    """أعلى البروكسيات من حيث نسبة النجاح — بلا deadlock."""
+    if owner is None:
+        rows = db_exec(
+            """SELECT proxy, success, fail FROM proxies
+               WHERE banned=0 AND (success+fail)>=2
+               ORDER BY CAST(success AS REAL)/(success+fail+1) DESC LIMIT ?""",
+            (n,), "all")
+    else:
+        rows = db_exec(
+            """SELECT proxy, success, fail FROM proxies
+               WHERE banned=0 AND (owner=0 OR owner=?)
+                 AND (success+fail)>=2
+               ORDER BY CAST(success AS REAL)/(success+fail+1) DESC LIMIT ?""",
+            (owner, n), "all")
+    return [r["proxy"] for r in rows]
+
+
+def pick_proxy(banned, owner=None):
+    """
+    اختيار ذكي: 70% من المميزين (نسبة نجاح عالية) + 30% عشوائي.
+    """
+    pool = all_proxies(owner)
+    if not pool:
+        return None
+
+    available = [p for p in pool if p not in banned]
+    if not available:
+        return None
+
+    ranked = best_proxies(30, owner)
+    preferred = [p for p in ranked if p in available]
+
+    if preferred and random.random() < 0.7:
+        return random.choice(preferred)
+
+    return random.choice(available)
+
+
+# ═══════════════════════ GiftCode CLIENT ═══════════════════════
+GC_DEFAULT_HEADERS = {
+    "User-Agent": "okhttp/4.12.0",
+    "Accept-Encoding": "gzip",
+}
+
+
+class GiftCodeClient:
+    def __init__(self, ref_code=GC_REF_CODE, token=GC_TOKEN,
+                 proxies_file=PROXIES_FILE):
+        self.ref_code = str(ref_code)
+        self.token = token or ""
+        self.proxies_file = proxies_file
+        self._p_idx = 0
+        self._lock = threading.Lock()
+
+    def _load_proxies(self):
+        out = []
+        for line in load_file_proxies(self.proxies_file):
+            if not line.startswith("http"):
+                line = "http://" + line
+            out.append(line)
+        return out
+
+    def _next_proxy(self, exclude=None):
+        exclude = exclude or set()
+        pool = self._load_proxies()
+        if not pool:
+            return None
+        with self._lock:
+            n = len(pool)
+            for _ in range(n):
+                p = pool[self._p_idx % n]
+                self._p_idx += 1
+                if p not in exclude:
+                    return p
+        return None
+
+    def _req(self, method, url, proxy=None, use_token=False, **kw):
+        headers = dict(GC_DEFAULT_HEADERS)
+        if use_token and self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if "headers" in kw:
+            headers.update(kw.pop("headers"))
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        return requests.request(method, url, headers=headers,
+                                proxies=proxies, timeout=20, **kw)
+
+    def fetch_leaders(self):
+        r = requests.get(GC_LEADERS, headers=GC_DEFAULT_HEADERS, timeout=15)
+        r.raise_for_status()
+        d = r.json()
+
+        gold = [{
+            "name": p.get("name") or "?",
+            "value": p.get("gold", 0) or 0,
+        } for p in d.get("top_gold", []) or []]
+
+        diamond = [{
+            "name": p.get("name") or "?",
+            "value": p.get("diamond", 0) or 0,
+        } for p in d.get("top_diamond", []) or []]
+
+        tasks = [{
+            "name": t.get("name") or "?",
+            "company": t.get("company") or "?",
+            "offer": t.get("offer_name") or "?",
+            "gold": t.get("gold_earned", 0) or 0,
+            "completed": t.get("completed_at") or "",
+        } for t in d.get("recent_tasks", []) or []]
+
+        purchases = [{
+            "user_id": str(p.get("user_id") or ""),
+            "name": p.get("user_name") or "?",
+            "product": (p.get("product_title_en") or p.get("product_title_tr") or "?"),
+            "currency": p.get("currency") or "",
+            "time": p.get("purchase_time") or "",
+        } for p in d.get("recent_purchases", []) or []]
+
+        return {"gold": gold, "diamond": diamond,
+                "tasks": tasks, "purchases": purchases}
+
+    def collect_ids(self, leaders=None):
+        if leaders is None:
+            leaders = self.fetch_leaders()
+        numeric, hashed = set(), set()
+        for p in leaders["purchases"]:
+            uid = p.get("user_id") or ""
+            if not uid:
+                continue
+            try:
+                if uid.isdigit():
+                    numeric.add(int(uid))
+                else:
+                    hashed.add(uid)
+            except Exception:
+                continue
+        return sorted(numeric), sorted(hashed)
+
+    def refer(self, target_id, proxy=None):
+        params = {"referred_user_id": str(target_id), "ref_code": self.ref_code}
+        try:
+            r = self._req("GET", GC_REFER, proxy=proxy, use_token=True, params=params)
+            if r.status_code != 200:
+                return {"success": False, "reason": f"HTTP_{r.status_code}"}
+            return r.json()
+        except Exception as e:
+            return {"success": False, "reason": f"CONN:{e}"}
+
+    def harvest(self, max_attempts=None, progress_cb=None, delay=None):
+        result = {"ok": 0, "ip_limit": 0, "already": 0, "invalid": 0,
+                  "gold": 0, "hits": [], "reason": "", "attempts": 0,
+                  "skipped_seen": 0}
+
+        proxy_pool = self._load_proxies()
+        if delay is None:
+            delay = max(0.5, 3.0 / max(1, len(proxy_pool))) if proxy_pool else 1.0
+
+        try:
+            leaders = self.fetch_leaders()
+        except Exception as e:
+            result["reason"] = f"fetch_failed:{e}"
+            return result
+
+        numeric, hashed = self.collect_ids(leaders)
+        queue = numeric + hashed
+
+        seen_rows = db_exec("SELECT uid FROM seen_ids WHERE ref_code=?",
+                            (self.ref_code,), "all")
+        seen = {r["uid"] for r in seen_rows}
+        fresh = [uid for uid in queue if str(uid) not in seen]
+        result["skipped_seen"] = len(queue) - len(fresh)
+        queue = fresh
+
+        if max_attempts:
+            queue = queue[:max_attempts]
+
+        total = len(queue)
+        banned = set()
+
+        for i, uid in enumerate(queue):
+            if proxy_pool and len(banned) >= len(proxy_pool):
+                banned.clear()
+            proxy = self._next_proxy(exclude=banned) if proxy_pool else None
+
+            res = self.refer(uid, proxy=proxy)
+            reason = res.get("reason", "") or ""
+            result["attempts"] += 1
+
+            db_result = "failed"
+            if res.get("success"):
+                g = res.get("referred_gold", 0) or 0
+                result["ok"] += 1
+                result["gold"] += g
+                result["hits"].append({"uid": uid, "gold": g})
+                db_result = "success"
+            elif "Aynı IP" in reason:
+                result["ip_limit"] += 1
+                if proxy:
+                    banned.add(proxy)
+                db_result = "same_ip"
+            elif "Zaten" in reason:
+                result["already"] += 1
+                db_result = "already"
+            elif "Geçersiz" in reason:
+                result["invalid"] += 1
+                db_result = "invalid"
+            elif reason.startswith("HTTP_429"):
+                if proxy:
+                    banned.add(proxy)
+                db_result = "rate_limit"
+
+            try:
+                db_exec("INSERT OR REPLACE INTO seen_ids(uid,ref_code,result) VALUES(?,?,?)",
+                        (str(uid), self.ref_code, db_result))
+            except Exception:
+                pass
+
+            if progress_cb:
+                try:
+                    progress_cb(i + 1, total, result["ok"], result["gold"])
+                except Exception:
+                    pass
+            time.sleep(delay)
+
+        return result
+
+    @staticmethod
+    def fmt_gold(v):
+        try:
+            return f"{int(v):,}".replace(",", ".")
+        except Exception:
+            return str(v)
+
+
+_gc_client = None
+
+
+def get_gc():
+    global _gc_client
+    if _gc_client is None:
+        _gc_client = GiftCodeClient()
+    return _gc_client
+
+
+# ═══════════ HTML helpers ═══════════
+def _esc(s):
+    return html.escape(str(s or ""))
+
+
+def gc_send(chat_id, text, reply_markup=None):
+    try:
+        main_bot.send_message(chat_id, text, reply_markup=reply_markup,
+                              parse_mode="HTML")
+    except Exception:
+        plain = (text.replace("<b>", "").replace("</b>", "")
+                     .replace("<i>", "").replace("</i>", "")
+                     .replace("<code>", "").replace("</code>", ""))
+        try:
+            main_bot.send_message(chat_id, plain, reply_markup=reply_markup)
+        except Exception as e:
+            log.error(f"gc_send: {e}")
+
+
+# ═══════════ Renderers ═══════════
+def render_gold(leaders, uid, top=50):
+    gold = leaders.get("gold", [])[:top]
+    if not gold:
+        return tr(uid, "no_gold")
+    lines = [tr(uid, "gold_lb_title"), "━━━━━━━━━━━━━━━━━━━━"]
+    for i, p in enumerate(gold, 1):
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}.".rjust(3)
+        lines.append(f"{medal}  {_esc(p['name'])[:22]}")
+        lines.append(f"      💰 {_esc(GiftCodeClient.fmt_gold(p['value']))} GP")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def render_diamond(leaders, uid, top=50):
+    d = leaders.get("diamond", [])[:top]
+    if not d:
+        return tr(uid, "no_diamond")
+    lines = [tr(uid, "diamond_lb_title"), "━━━━━━━━━━━━━━━━━━━━"]
+    for i, p in enumerate(d, 1):
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}.".rjust(3)
+        lines.append(f"{medal}  {_esc(p['name'])[:22]}")
+        lines.append(f"      💎 {_esc(p['value'])}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def render_tasks(leaders, uid, top=20):
+    tasks = leaders.get("tasks", [])[:top]
+    if not tasks:
+        return tr(uid, "no_tasks")
+    lines = [tr(uid, "tasks_title"), "━━━━━━━━━━━━━━━━━━━━"]
+    for i, t in enumerate(tasks, 1):
+        lines.append(f"{i}. <b>{_esc(t['name'])[:22]}</b>")
+        lines.append(f"   🏢 {_esc(t['company'])[:20]}")
+        lines.append(f"   📌 {_esc(t['offer'])[:30]}")
+        lines.append(f"   💰 {_esc(GiftCodeClient.fmt_gold(t['gold']))} GP")
+        if t.get("completed"):
+            lines.append(f"   🕒 {_esc(t['completed'])}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def render_top_refs(uid, limit=10):
+    rows = db_exec("""SELECT u.user_id, u.first_name, u.username,
+        (SELECT COUNT(*) FROM referrals r WHERE r.referrer=u.user_id) AS c
+        FROM users u
+        ORDER BY c DESC LIMIT ?""", (limit,), "all")
+    rows = [r for r in rows if r["c"] > 0]
+    if not rows:
+        return tr(uid, "no_refs")
+    lines = [tr(uid, "refs_title"), "━━━━━━━━━━━━━━━━━━━━"]
+    for i, r in enumerate(rows, 1):
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}.".rjust(3)
+        name = _esc(r["first_name"] or "?")
+        if r["username"]:
+            name += f"  (@{_esc(r['username'])})"
+        lines.append(f"{medal}  {name}")
+        lines.append(f"      🎯 {r['c']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+# ═══════════════════════ Original APIs ═══════════════════════
+BASE_URL = "https://giftcode.betelgeuse.app/api/referrer"
+TOKEN_API = ("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+             "eyJzdWIiOiJndGF2NTEwMzFAZ21haWwuY29tIn0."
+             "LR0lbOdO6Qq5d_4X0jKUC6mx18PP1-w2ChvBXQTETw0")
+
+
+def giftcode_send(code, target, proxy=None):
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        r = requests.get(BASE_URL,
+                         params={"referred_user_id": str(target),
+                                 "ref_code": str(code)},
+                         headers={"Authorization": TOKEN_API,
+                                  "User-Agent": "okhttp/5.3.2"},
+                         timeout=15, proxies=proxies)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("success"):
+                return "success", d.get("referred_gold", 0)
+            reason = d.get("reason", "")
+            if "Zaten" in reason:
+                return "already", reason
+            if "Geçersiz" in reason:
+                return "invalid", reason
+            if "Aynı IP" in reason:
+                return "same_ip", reason
+            return "failed", reason
+        if r.status_code == 429:
+            return "rate_limit", "429"
+        return "failed", f"HTTP_{r.status_code}"
+    except Exception as e:
+        return "error", str(e)
+
+
+FIREBASE_KEY = "AIzaSyDR1RcaMP9IOmIy7i_daFPNr3e7kmWid6o"
+FB_URL = "https://us-central1-gift-sheep-b21df.cloudfunctions.net/submitReferral"
+
+
+def firebase_signup(email, password):
+    try:
+        r = requests.post(
+            "https://identitytoolkit.googleapis.com/v1/accounts:signUp",
+            params={"key": FIREBASE_KEY},
+            json={"email": email, "password": password, "returnSecureToken": True},
+            timeout=30)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def firebase_refer(token, code, proxy=None):
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        r = requests.post(FB_URL,
+                          headers={"Authorization": f"Bearer {token}",
+                                   "Content-Type": "application/json; charset=utf-8",
+                                   "User-Agent": "okhttp/3.12.13"},
+                          json={"data": {"code": code}},
+                          timeout=30, proxies=proxies)
+        d = r.json()
+        return (d.get("result", {}).get("success", False),
+                d.get("result", {}).get("message", ""))
+    except Exception as e:
+        return False, str(e)
+
+
+# ═══════════════════════ BOT ═══════════════════════
+main_bot = telebot.TeleBot(MAIN_BOT_TOKEN, parse_mode=None)
+
+attack_status, attack_mode = {}, {}
+_cancel = {}
+_gc_lock = threading.Lock()
+proxy_fallback_notified = {}
+
+
+def is_owner(uid): return str(uid) == str(OWNER_ID)
+
+
+def is_banned(uid):
+    r = db_exec("SELECT banned FROM users WHERE user_id=?", (uid,), "one")
+    return bool(r and r["banned"])
+
+
+def subscribed_tg(uid):
+    if is_owner(uid):
+        return True
+    try:
+        m = main_bot.get_chat_member(f"@{CHANNEL_TG}", uid)
+        return m.status in ("member", "administrator", "creator")
+    except Exception:
+        return False
+
+
+def subscribed_yt(uid):
+    if is_owner(uid):
+        return True
+    u = get_user(uid)
+    if not u or not u["youtube_verified"]:
+        return False
+    try:
+        d = datetime.fromisoformat(u["youtube_date"])
+        if (datetime.now() - d).days > 7:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def check_subs(uid):
+    if is_owner(uid):
         return True, None
-    if not is_subscribed_telegram(user_id):
+    if not subscribed_tg(uid):
         return False, "telegram"
-    if not is_subscribed_youtube(user_id):
+    if not subscribed_yt(uid):
         return False, "youtube"
-    extra_ok, channel = is_subscribed_extra(user_id)
-    if not extra_ok:
-        return False, f"extra_{channel}"
     return True, None
 
-def get_user_setting(user_id, key, default=None):
-    data = load_user_settings(user_id)
-    return data.get(key, default)
 
-def set_user_setting(user_id, key, value):
-    data = load_user_settings(user_id)
-    data[key] = value
-    save_user_settings(user_id, data)
+# ═══════════════════════ MAIN MENU ═══════════════════════
+def main_menu(uid, chat_id):
+    u = get_user(uid)
+    if not u:
+        return
+    name = u["first_name"] or "user"
+    mode = u["mode"]
+    start_num = u["start_number"] or 0
+    kb = InlineKeyboardMarkup(row_width=2)
+    if mode == "giftcode":
+        kb.add(InlineKeyboardButton(tr(uid, "set_referral"), callback_data="set_referral"),
+               InlineKeyboardButton(tr(uid, "set_start"), callback_data="set_start"))
+    else:
+        kb.add(InlineKeyboardButton(tr(uid, "set_referral"), callback_data="set_referral"))
+    kb.add(
+        InlineKeyboardButton(tr(uid, "start_attack"), callback_data="start_attack"),
+        InlineKeyboardButton(tr(uid, "stop_attack"), callback_data="stop_attack"),
+        InlineKeyboardButton(tr(uid, "toggle_mode"), callback_data="toggle_mode"),
+        InlineKeyboardButton(tr(uid, "status"), callback_data="status"),
+        InlineKeyboardButton(tr(uid, "referral"), callback_data="my_referral"),
+        InlineKeyboardButton(tr(uid, "add_proxy"), callback_data="user_add_proxy"),
+        InlineKeyboardButton(tr(uid, "proxy_help_btn"), callback_data="proxy_help"),
+        InlineKeyboardButton(tr(uid, "daily"), callback_data="daily"),
+        InlineKeyboardButton(tr(uid, "leaderboard"), callback_data="leaderboard"),
+        InlineKeyboardButton(tr(uid, "my_stats"), callback_data="my_stats"),
+        InlineKeyboardButton(tr(uid, "lang"), callback_data="lang_menu"),
+        InlineKeyboardButton(tr(uid, "quick_menu"), callback_data="show_quick_menu"),
+        InlineKeyboardButton(tr(uid, "gc_panel_btn"), callback_data="gc_panel"),
+        InlineKeyboardButton(tr(uid, "refs_btn"), callback_data="gc_top_refs"),
+    )
+    if is_owner(uid):
+        kb.add(InlineKeyboardButton(tr(uid, "owner"), callback_data="owner_commands"))
+    stats = history_stats(uid)
+    text = (f"{tr(uid,'welcome', name=name)}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"💎 {tr(uid,'points')}: {u['points']}\n"
+            f"🔑 {tr(uid,'code')}: {u['referral_code']}\n"
+            f"🔢 {tr(uid,'start_num')}: {start_num}\n"
+            f"🔄 {tr(uid,'mode')}: {mode.upper()}\n"
+            f"✅ {tr(uid,'success')}: {stats['success']}\n"
+            f"🔥 Streak: {u['streak']}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"{tr(uid,'choose')}")
+    try:
+        main_bot.send_message(chat_id, text, reply_markup=kb)
+    except Exception as e:
+        log.error(f"main_menu: {e}")
 
-def translate_reason(reason):
-    translations = {
-        "already_referred": "هذا الرقم تمت إحالته مسبقاً بواسطة مستخدم آخر",
-        "invalid_user": "الرقم غير صالح (ليس مستخدمًا في التطبيق)",
-        "same_ip": "نفس عنوان IP تم استخدامه مؤخراً، يرجى تغيير البروكسي",
-        "rate_limited": "تم تجاوز عدد الطلبات المسموح بها، انتظر قليلاً",
-        "proxy_dead": "البروكسي لا يعمل، تم تخطيه",
-        "already_used_success": "هذا الرقم سبق أن تمت إحالته بنجاح بواسطتك",
-        "already_used_failed": "هذا الرقم سبق أن فشلت محاولة إحالته (لن نعيد المحاولة)",
-        "already_used_already": "هذا الرقم محال مسبقاً (مسجل في القائمة)",
+
+def quick_menu(uid, chat_id):
+    kb = {
+        "keyboard": [
+            [{"text": "▶️ Start", "color": "success"}],
+            [{"text": "⏹️ Stop", "color": "danger"},
+             {"text": "📊 Status", "color": "primary"}],
+            [{"text": "🎁 Daily", "color": "success"},
+             {"text": "🏆 Top", "color": "primary"}],
+            [{"text": "📊 Stats", "color": "primary"},
+             {"text": "🔗 Link", "color": "primary"}],
+            [{"text": "🎯 GiftCode", "color": "success"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": False,
     }
-    if reason.startswith("HTTP_"):
-        return f"خطأ في الخادم (كود {reason.split('_')[1]})"
-    return translations.get(reason, reason)
+    try:
+        requests.post(f"https://api.telegram.org/bot{MAIN_BOT_TOKEN}/sendMessage",
+                      json={"chat_id": chat_id, "text": tr(uid, "quick_menu"),
+                            "reply_markup": kb}, timeout=10)
+    except Exception as e:
+        log.error(f"quick: {e}")
 
-def process_referral(user_id, target, proxy):
-    used_data = load_used_numbers(user_id)
-    ref_code = get_user_setting(user_id, "referral_code", "4094894")
-    if str(target) in used_data["success"]:
-        return {"success": False, "reason": "already_used_success"}
-    if str(target) in used_data["failed"]:
-        return {"success": False, "reason": "already_used_failed"}
-    if str(target) in used_data["already"]:
-        return {"success": False, "reason": "already_used_already"}
-    result = send_referral(ref_code, target, proxy)
-    if result.get("success"):
-        used_data["success"].append(str(target))
-        save_used_numbers(user_id, used_data)
-    elif result.get("reason") == "already_referred":
-        used_data["already"].append(str(target))
-        save_used_numbers(user_id, used_data)
-    else:
-        used_data["failed"].append(str(target))
-        save_used_numbers(user_id, used_data)
-    return result
 
-attack_status = {}
+# ═══════════════════════ ATTACK ═══════════════════════
+def process_giftcode(uid, target, proxy):
+    u = get_user(uid)
+    code = u["referral_code"]
+    res, reason = giftcode_send(code, target, proxy)
+    log_history(uid, "giftcode", target,
+                res if res in ("success", "already", "failed") else "failed", proxy)
+    return res, reason
 
-def attack_loop(user_id, chat_id):
-    user_id_str = str(user_id)
-    start_number = int(get_user_setting(user_id, "start_number", DEFAULT_START))
-    current_number = start_number
-    proxy_index = 0
-    attempts = 0
-    successes = 0
-    attack_status[user_id_str] = {"running": True, "number": current_number}
-    while attack_status[user_id_str]["running"]:
-        sub_ok, sub_type = check_all_subscriptions(user_id)
-        if not sub_ok:
-            if sub_type == "telegram":
-                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة التلجرام الأساسية: @{CHANNEL_TG}")
-            elif sub_type == "youtube":
-                bot.send_message(chat_id, f"❌ يرجى الاشتراك في قناة اليوتيوب: {CHANNEL_YT}")
-            elif sub_type and sub_type.startswith("extra_"):
-                channel = sub_type.replace("extra_", "")
-                bot.send_message(chat_id, f"❌ يرجى الاشتراك في القناة الإضافية: @{channel}")
-            else:
-                bot.send_message(chat_id, "❌ يرجى الاشتراك في جميع القنوات المطلوبة.")
-            break
 
-        points = load_user_points(user_id)
-        if points <= 0 and not is_owner(user_id):
-            referral_link = get_referral_link(user_id)
-            keyboard = InlineKeyboardMarkup()
-            btn_link = InlineKeyboardButton("🔗 انسخ رابط الإحالة", callback_data="my_referral")
-            keyboard.add(btn_link)
-            bot.send_message(chat_id,
-                f"⚠️ **لقد نفدت نقاطك!**\n\n"
-                f"📢 شارك رابط الإحالة الخاص بك مع أصدقائك:\n"
-                f"`{referral_link}`\n\n"
-                f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
-            break
+def process_sheep(uid, target, proxy):
+    email = f"fb_{uuid.uuid4().hex[:10]}@temp-mail.org"
+    auth = firebase_signup(email, "Test@2026")
+    if not auth or "idToken" not in auth:
+        return "failed", "firebase_signup"
+    u = get_user(uid)
+    success, msg = firebase_refer(auth["idToken"], u["referral_code"] or "W27PO5", proxy)
+    log_history(uid, "giftsheep", target, "success" if success else "failed", proxy)
+    return ("success" if success else "failed"), msg
 
-        if not proxies:
-            bot.send_message(chat_id, "❌ لا يوجد بروكسيات! تم إيقاف الهجوم.")
-            break
 
-        used_data = load_used_numbers(user_id)
-        all_used = set(used_data["success"] + used_data["failed"] + used_data["already"])
-        while str(current_number) in all_used:
-            current_number += 1
-        attack_status[user_id_str]["number"] = current_number
+def attack_loop(uid, chat_id):
+    try:
+        u = get_user(uid)
+        if not u:
+            return
+        mode = u["mode"]
+        current = u["start_number"]
 
-        proxy = None
-        for _ in range(len(proxies) * 2):
-            candidate = proxies[proxy_index % len(proxies)]
-            proxy_index += 1
-            if candidate not in dead_proxies:
-                proxy = candidate
+        if not attack_status.get(uid, {}).get("started_once"):
+            current += random.randint(0, 500)
+            set_user(uid, start_number=current)
+
+        attempts = successes = 0
+        banned = set()
+        attack_status[uid] = {"running": True, "number": current,
+                              "attempts": 0, "success": 0,
+                              "started_once": True}
+        try:
+            main_bot.send_message(chat_id, f"🚀 {mode.upper()}")
+        except Exception:
+            pass
+        time.sleep(1)
+
+        progress_msg = None
+        try:
+            progress_msg = main_bot.send_message(chat_id, "⏳ ...").message_id
+        except Exception:
+            pass
+
+        last_update = time.time()
+
+        while attack_status.get(uid, {}).get("running"):
+            if _cancel.get(uid):
                 break
-        if not proxy:
-            bot.send_message(chat_id, "⚠️ جميع البروكسيات تالفة! قم بإضافة بروكسيات جديدة.")
-            break
-
-        target = str(current_number)
-        current_number += 1
-        attack_status[user_id_str]["number"] = current_number
-        attempts += 1
-        bot.send_message(chat_id, f"⏳ جاري محاولة #{attempts} على الرقم {target}...")
-        result = process_referral(user_id, target, proxy)
-        if result.get("success"):
-            successes += 1
-            gold = result.get("gold", 0)
-            new_points = load_user_points(user_id) - 1
-            save_user_points(user_id, new_points)
-            bot.send_message(chat_id, f"🎉 تم الإهداء من قبل هيمو! (+{gold} GP)\n💎 نقاطك المتبقية: {new_points}")
-            sessions = load_user_sessions()
-            user_data = sessions.get(str(user_id), {})
-            first_name = user_data.get("first_name", "مستخدم")
-            bot.send_message(OWNER_ID, f"✅ نجاح! المستخدم {first_name} -> {target} | +{gold} GP")
-        else:
-            reason = result.get("reason", "غير معروف")
-            arabic_reason = translate_reason(reason)
-            if reason in ["proxy_dead", "same_ip", "rate_limited"]:
-                bot.send_message(chat_id, f"⚠️ {arabic_reason}، ننتقل للتالي")
-                if proxy and proxy not in dead_proxies:
-                    dead_proxies.append(proxy)
-                current_number -= 1
-                continue
-            elif reason in ["already_used_success", "already_used_failed", "already_used_already"]:
-                bot.send_message(chat_id, f"ℹ️ {arabic_reason} (تم التخطي)")
-                continue
-            else:
-                bot.send_message(chat_id, f"😞 فشلت المحاولة: {arabic_reason}")
-        time.sleep(ATTACK_DELAY)
-        if attempts % 10 == 0:
-            used = load_used_numbers(user_id)
-            bot.send_message(chat_id,
-                f"📊 إحصاءات: {successes} نجاح من {attempts} محاولة | "
-                f"آخر رقم: {target} | نجاح كلي: {len(used['success'])}"
-            )
-    attack_status[user_id_str]["running"] = False
-    bot.send_message(chat_id, f"⏹️ تم إيقاف الهجوم. إجمالي النجاحات: {successes} من {attempts} محاولة.")
-
-# ============================================
-# 📨 أوامر المستخدمين
-# ============================================
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    user_id = message.from_user.id
-    first_name = message.from_user.first_name or "مستخدم"
-
-    update_user_activity(user_id)
-
-    referrer_id = None
-    if message.text and message.text.startswith('/start'):
-        parts = message.text.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            referrer_id = int(parts[1])
-
-    sessions = load_user_sessions()
-    user_id_str = str(user_id)
-    if user_id_str not in sessions:
-        sessions[user_id_str] = {
-            "first_name": first_name,
-            "username": message.from_user.username or "",
-            "joined": datetime.now().isoformat()
-        }
-        save_user_sessions(sessions)
-
-    sub_ok, sub_type = check_all_subscriptions(user_id)
-    referral_data = load_referral_data()
-
-    if referrer_id and user_id_str not in referral_data.get("referred_users", {}):
-        if not is_subscribed_telegram(user_id):
-            keyboard = InlineKeyboardMarkup(row_width=1)
-            btn_tg = InlineKeyboardButton("📢 اشترك في قناة التلجرام", url=f"https://t.me/{CHANNEL_TG}")
-            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
-            btn_extra = InlineKeyboardButton("✅ اشتركت واريد تأكيد الإحالة", callback_data=f"confirm_referral_{referrer_id}")
-            keyboard.add(btn_tg, btn_yt)
-            keyboard.add(btn_extra)
-            bot.reply_to(message,
-                f"👋 أهلاً {first_name}!\n\n"
-                f"🔗 تمت دعوتك بواسطة مستخدم آخر.\n"
-                f"🔒 **يجب الاشتراك في قناة التلجرام أولاً** لتأكيد الإحالة والحصول على المكافآت.\n"
-                f"بعد الاشتراك، اضغط على زر تأكيد الإحالة.",
-                reply_markup=keyboard
-            )
-            return
-        else:
-            success, msg = process_referral_new_user(user_id, referrer_id)
-            bot.reply_to(message, f"🔗 تمت الإحالة!\n\n{msg}")
-
-    if not sub_ok:
-        keyboard = InlineKeyboardMarkup(row_width=1)
-        if sub_type == "telegram":
-            btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
-            keyboard.add(btn_tg)
-        elif sub_type == "youtube":
-            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
-            btn_verify = InlineKeyboardButton("✅ لقد اشتركت (تأكيد)", callback_data="verify_youtube")
-            keyboard.add(btn_yt)
-            keyboard.add(btn_verify)
-        elif sub_type and sub_type.startswith("extra_"):
-            channel = sub_type.replace("extra_", "")
-            btn_extra = InlineKeyboardButton(f"📢 اشترك في @{channel}", url=f"https://t.me/{channel}")
-            keyboard.add(btn_extra)
-        else:
-            btn_tg = InlineKeyboardButton("📢 اشترك في القناة الأساسية", url=f"https://t.me/{CHANNEL_TG}")
-            btn_yt = InlineKeyboardButton("🎬 اشترك في يوتيوب", url=CHANNEL_YT)
-            keyboard.add(btn_tg)
-            keyboard.add(btn_yt)
-            extra_channels = load_extra_channels()
-            for ch in extra_channels:
-                btn_extra = InlineKeyboardButton(f"📢 اشترك في @{ch}", url=f"https://t.me/{ch}")
-                keyboard.add(btn_extra)
-
-        btn_check = InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_sub")
-        keyboard.add(btn_check)
-
-        bot.reply_to(message,
-            f"👋 أهلاً {first_name}!\n\n"
-            f"🔒 **يجب الاشتراك في جميع القنوات المطلوبة** أولاً.\n"
-            f"بعد الاشتراك، اضغط على زر التحقق.",
-            reply_markup=keyboard
-        )
-        return
-
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    btn_set_ref = InlineKeyboardButton("🔑 تعيين كود الإحالة", callback_data="set_referral")
-    btn_set_start = InlineKeyboardButton("🔢 تعيين رقم البداية", callback_data="set_start")
-    btn_start_attack = InlineKeyboardButton("▶️ بدء الهجوم", callback_data="start_attack")
-    btn_stop_attack = InlineKeyboardButton("⏹️ إيقاف الهجوم", callback_data="stop_attack")
-    btn_status = InlineKeyboardButton("📊 الحالة", callback_data="status")
-    btn_referral = InlineKeyboardButton("🔗 رابط الإحالة الخاص بي", callback_data="my_referral")
-    keyboard.add(btn_set_ref, btn_set_start)
-    keyboard.add(btn_start_attack, btn_stop_attack)
-    keyboard.add(btn_status, btn_referral)
-
-    if is_owner(user_id):
-        btn_owner = InlineKeyboardButton("👑 أوامر المالك", callback_data="owner_commands")
-        keyboard.add(btn_owner)
-
-    ref_code = get_user_setting(user_id, "referral_code", "غير محدد")
-    start_num = get_user_setting(user_id, "start_number", DEFAULT_START)
-    points = load_user_points(user_id)
-    used = load_used_numbers(user_id)
-    referral_count, referral_points = get_referral_stats(user_id)
-
-    bot.reply_to(message,
-        f"✅ مرحباً {first_name}!\n\n"
-        f"📋 الإعدادات الحالية:\n"
-        f"🔑 كود الإحالة: {ref_code}\n"
-        f"🔢 رقم البداية: {start_num}\n"
-        f"💎 النقاط: {points}\n"
-        f"🔗 إحالاتك: {referral_count} (ربحت {referral_points} نقطة)\n"
-        f"✅ نجاح: {len(used['success'])}\n"
-        f"⚠️ محال: {len(used['already'])}\n"
-        f"❌ فشل: {len(used['failed'])}\n"
-        f"🌐 بروكسيات: {len(proxies)}\n\n"
-        f"اضغط على الزر المناسب:",
-        reply_markup=keyboard
-    )
-
-@bot.message_handler(commands=['get_my_id'])
-def get_my_id(message):
-    user_id = message.from_user.id
-    bot.reply_to(message,
-        f"🆔 **معرفك هو:** `{user_id}`\n\n"
-        f"🔑 **OWNER_ID في الكود:** `{OWNER_ID}`\n"
-        f"📌 **هل هما متطابقان؟** {'✅ نعم' if str(user_id) == str(OWNER_ID) else '❌ لا'}\n\n"
-        f"إذا كانا غير متطابقين، غيّر `OWNER_ID` في الكود إلى `{user_id}`.",
-        parse_mode="Markdown"
-    )
-
-# ============================================
-# 👑 عرض أوامر المالك (أزرار)
-# ============================================
-def show_owner_menu(message):
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    btn_add_proxy = InlineKeyboardButton("➕ إضافة بروكسي", callback_data="owner_add_proxy")
-    btn_bulk_proxy = InlineKeyboardButton("📦 إضافة بروكسيات (دفعة)", callback_data="owner_add_bulk")
-    btn_refresh = InlineKeyboardButton("🔄 تحديث البروكسيات", callback_data="owner_refresh")
-    btn_list = InlineKeyboardButton("📋 عرض البروكسيات", callback_data="owner_list")
-    btn_check = InlineKeyboardButton("🔍 فحص البروكسيات (على الخادم)", callback_data="owner_check")
-    btn_clear_dead = InlineKeyboardButton("🗑️ حذف التالفة", callback_data="owner_clear_dead")
-    btn_stats = InlineKeyboardButton("📊 الإحصائيات", callback_data="owner_stats")
-    btn_clear_sessions = InlineKeyboardButton("🧹 مسح الجلسات", callback_data="owner_clear_sessions")
-    btn_help = InlineKeyboardButton("❓ المساعدة", callback_data="owner_help")
-    btn_add_channel = InlineKeyboardButton("➕ إضافة قناة إجبارية", callback_data="owner_add_channel")
-    btn_list_channels = InlineKeyboardButton("📋 عرض القنوات الإجبارية", callback_data="owner_list_channels")
-    btn_remove_channel = InlineKeyboardButton("🗑️ حذف قناة إجبارية", callback_data="owner_remove_channel")
-    btn_broadcast = InlineKeyboardButton("📢 بث رسالة للجميع", callback_data="owner_broadcast")
-    btn_active = InlineKeyboardButton("👥 المستخدمون النشطون", callback_data="owner_active_users")
-    btn_referral_stats = InlineKeyboardButton("📊 إحصائيات الإحالات", callback_data="owner_referral_stats")
-    btn_reset_points = InlineKeyboardButton("🔄 إعادة تعيين النقاط للجميع", callback_data="owner_reset_points")
-
-    keyboard.add(btn_add_proxy, btn_bulk_proxy)
-    keyboard.add(btn_refresh, btn_list)
-    keyboard.add(btn_check, btn_clear_dead)
-    keyboard.add(btn_stats, btn_clear_sessions)
-    keyboard.add(btn_add_channel, btn_list_channels)
-    keyboard.add(btn_remove_channel, btn_broadcast)
-    keyboard.add(btn_active, btn_referral_stats)
-    keyboard.add(btn_reset_points)
-    keyboard.add(btn_help)
-
-    bot.reply_to(message, "👑 **قائمة أوامر المالك** (اختر الأمر):", reply_markup=keyboard, parse_mode="Markdown")
-
-# ============================================
-# 🖱️ معالجة الأزرار
-# ============================================
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
-
-    update_user_activity(user_id)
-
-    # ========== تأكيد الإحالة بعد الاشتراك ==========
-    if call.data.startswith("confirm_referral_"):
-        referrer_id = int(call.data.replace("confirm_referral_", ""))
-        if not is_subscribed_telegram(user_id):
-            bot.answer_callback_query(call.id, "❌ اشترك في قناة التلجرام أولاً!", show_alert=True)
-            return
-        success, msg = process_referral_new_user(user_id, referrer_id)
-        if success:
-            bot.answer_callback_query(call.id, "✅ تمت الإحالة بنجاح! حصلت على 10 نقاط.", show_alert=True)
-        else:
-            bot.answer_callback_query(call.id, f"❌ {msg}", show_alert=True)
-        bot.send_message(chat_id, f"🔗 نتيجة الإحالة:\n\n{msg}")
-        start_command(call.message)
-        return
-
-    # ========== أزرار المالك ==========
-    if call.data == "owner_commands":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-        bot.answer_callback_query(call.id, "📋 جاري عرض الأوامر...")
-        show_owner_menu(call.message)
-        return
-
-    if call.data == "owner_add_channel":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل معرف القناة (بدون @):")
-        msg = bot.send_message(chat_id, "📢 أرسل معرف القناة التي تريد إضافتها (مثال: mychannel) :")
-        bot.register_next_step_handler(msg, add_channel_step)
-        return
-
-    if call.data == "owner_list_channels":
-        if not is_owner(user_id): return
-        channels = load_extra_channels()
-        if not channels:
-            bot.reply_to(call.message, "📭 لا توجد قنوات إضافية حالياً.")
-        else:
-            text = "📋 **القنوات الإجبارية الإضافية:**\n\n"
-            for i, ch in enumerate(channels, 1):
-                text += f"{i}. @{ch}\n"
-            bot.reply_to(call.message, text, parse_mode="Markdown")
-        return
-
-    if call.data == "owner_remove_channel":
-        if not is_owner(user_id): return
-        channels = load_extra_channels()
-        if not channels:
-            bot.reply_to(call.message, "📭 لا توجد قنوات لحذفها.")
-            return
-        keyboard = InlineKeyboardMarkup()
-        for ch in channels:
-            keyboard.add(InlineKeyboardButton(f"🗑️ حذف @{ch}", callback_data=f"remove_channel_{ch}"))
-        keyboard.add(InlineKeyboardButton("🔙 إلغاء", callback_data="owner_commands"))
-        bot.reply_to(call.message, "اختر القناة التي تريد حذفها:", reply_markup=keyboard)
-        return
-
-    if call.data.startswith("remove_channel_"):
-        if not is_owner(user_id): return
-        channel = call.data.replace("remove_channel_", "")
-        channels = load_extra_channels()
-        if channel in channels:
-            channels.remove(channel)
-            save_extra_channels(channels)
-            bot.answer_callback_query(call.id, f"✅ تم حذف القناة @{channel}")
-            bot.reply_to(call.message, f"✅ تم حذف القناة: @{channel}")
-        else:
-            bot.answer_callback_query(call.id, "⚠️ هذه القناة غير موجودة")
-        return
-
-    if call.data == "owner_broadcast":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل الرسالة التي تريد بثها:")
-        msg = bot.send_message(chat_id, "📢 أرسل النص الذي تريد إرساله لجميع المستخدمين:")
-        bot.register_next_step_handler(msg, broadcast_step)
-        return
-
-    if call.data == "owner_add_proxy":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "✏️ أرسل البروكسي الجديد:")
-        msg = bot.send_message(chat_id, "🌐 أرسل البروكسي (مثال: 192.168.1.1:8080):")
-        bot.register_next_step_handler(msg, add_proxy_step)
-        return
-
-    if call.data == "owner_add_bulk":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "📦 أرسل قائمة البروكسيات:")
-        msg = bot.send_message(chat_id, "🌐 أرسل قائمة البروكسيات (كل بروكسي في سطر) أو أرسل ملف نصي:")
-        bot.register_next_step_handler(msg, process_bulk_proxies)
-        return
-
-    if call.data == "owner_refresh":
-        if not is_owner(user_id): return
-        global proxies
-        new_proxies = load_proxies()
-        if not new_proxies:
-            bot.answer_callback_query(call.id, "⚠️ ملف proxies.txt فارغ! جارٍ استخدام البروكسيات الاحتياطية.", show_alert=True)
-            proxies = BACKUP_PROXIES.copy()
-            bot.send_message(chat_id, f"✅ تم تحميل {len(proxies)} بروكسي احتياطي.")
-            return
-        proxies = new_proxies
-        bot.answer_callback_query(call.id, f"✅ تم التحديث! عدد البروكسيات: {len(proxies)}", show_alert=True)
-        return
-
-    if call.data == "owner_list":
-        if not is_owner(user_id): return
-        if not proxies:
-            bot.reply_to(call.message, "📭 لا يوجد بروكسيات.")
-            return
-        text = "🌐 البروكسيات:\n\n"
-        for i, p in enumerate(proxies, 1):
-            text += f"{i}. {p}\n"
-        bot.reply_to(call.message, text)
-        return
-
-    if call.data == "owner_check":
-        if not is_owner(user_id): return
-        bot.answer_callback_query(call.id, "🔍 جاري فحص البروكسيات على الخادم...")
-        check_proxies(call.message)
-        return
-
-    if call.data == "owner_clear_dead":
-        if not is_owner(user_id): return
-        global dead_proxies
-        if not dead_proxies:
-            bot.answer_callback_query(call.id, "📭 لا يوجد بروكسيات تالفة!", show_alert=True)
-            return
-        dead_proxies = []
-        save_dead_proxies([])
-        bot.answer_callback_query(call.id, "🗑️ تم حذف جميع البروكسيات التالفة!", show_alert=True)
-        return
-
-    if call.data == "owner_referral_stats":
-        if not is_owner(user_id): return
-        referral_data = load_referral_data()
-        referrals = referral_data.get("referrals", {})
-        if not referrals:
-            bot.reply_to(call.message, "📊 **لا توجد إحالات حتى الآن.**")
-            return
-        text = "📊 **إحصائيات الإحالات**\n\n"
-        sorted_refs = sorted(referrals.items(), key=lambda x: x[1]["count"], reverse=True)
-        for ref_id_str, data in sorted_refs[:20]:
-            sessions = load_user_sessions()
-            user_data = sessions.get(ref_id_str, {})
-            name = user_data.get("first_name", "مستخدم")
-            username = user_data.get("username", "")
-            count = data["count"]
-            points_earned = data["points_earned"]
-            text += f"👤 {name} (@{username})\n"
-            text += f"   📌 إحالات: {count} | 💎 ربح: {points_earned}\n"
-            text += "   -------------------------\n"
-        bot.reply_to(call.message, text, parse_mode="Markdown")
-        return
-
-    # ========== إعادة تعيين نقاط الجميع ==========
-    if call.data == "owner_reset_points":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-
-        bot.answer_callback_query(call.id, "🔄 جاري إعادة تعيين نقاط الجميع...", show_alert=True)
-
-        sessions = load_user_sessions()
-        if not sessions:
-            bot.reply_to(call.message, "📊 لا يوجد مستخدمون لإعادة تعيين نقاطهم.")
-            return
-
-        updated_count = 0
-        for user_id_str in sessions.keys():
-            uid = int(user_id_str)
-            used = load_used_numbers(uid)
-            successes = len(used.get("success", []))
-            new_points = max(0, 50 - successes)
-            save_user_points(uid, new_points)
-            updated_count += 1
-
-        bot.reply_to(call.message, f"✅ تم إعادة تعيين نقاط **{updated_count}** مستخدم بنجاح!\nالقاعدة الجديدة: النقاط = 50 - عدد الإحالات الناجحة (بحد أدنى 0).")
-        return
-
-    # ========== إحصائيات عامة ==========
-    if call.data == "owner_stats":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-
-        loading_msg = bot.send_message(chat_id, "📊 **جاري تحميل الإحصائيات...** يرجى الانتظار.")
-
-        def send_stats():
-            try:
-                sessions = load_user_sessions()
-                if not sessions:
-                    bot.edit_message_text(
-                        "📊 **لا يوجد مستخدمون مسجلون حتى الآن.**\n\nقم بدعوة أصدقائك لاستخدام البوت عن طريق إرسال `/start`.",
-                        chat_id=chat_id,
-                        message_id=loading_msg.message_id,
-                        parse_mode='HTML'
-                    )
-                    return
-
-                text = "<b>📊 الإحصائيات العامة</b>\n\n"
-                total_users = len(sessions)
-                active = 0
-                total_success = 0
-                users_data = []
-
-                for user_id_str, data in sessions.items():
-                    uid = int(user_id_str)
-                    sub_ok, _ = check_all_subscriptions(uid)
-                    if sub_ok:
-                        active += 1
-
-                    username = data.get("username", "غير معروف")
-                    first_name = data.get("first_name", "مستخدم")
-                    points = load_user_points(uid)
-                    used = load_used_numbers(uid)
-                    successes = len(used["success"])
-                    total_success += successes
-
-                    users_data.append({
-                        "first_name": first_name,
-                        "username": username,
-                        "points": points,
-                        "successes": successes
-                    })
-
-                users_data.sort(key=lambda x: x["successes"], reverse=True)
-
-                for i, user in enumerate(users_data[:20], 1):
-                    text += f"{i}. 👤 {user['first_name']} (@{user['username']})\n"
-                    text += f"   💎 النقاط: {user['points']} | ✅ نجاح: {user['successes']}\n"
-                    text += "   -------------------------\n"
-
-                if len(users_data) > 20:
-                    text += f"\n... وعرض {len(users_data) - 20} مستخدم آخر (الأقل إحالات).\n"
-
-                text += f"\n<b>📊 الملخص:</b>\n"
-                text += f"👥 إجمالي المستخدمين: {total_users}\n"
-                text += f"🟢 النشطين (مشتركين): {active}\n"
-                text += f"🔴 غير النشطين (غير مشتركين): {total_users - active}\n"
-                text += f"✅ إجمالي الإحالات الناجحة: {total_success}\n"
-                text += f"🌐 بروكسيات: {len(proxies)}\n"
-                text += f"💀 تالفة: {len(dead_proxies)}\n"
-                extra = load_extra_channels()
-                text += f"📢 قنوات إضافية: {len(extra)}"
-
-                if len(text) > 4000:
-                    bot.edit_message_text(
-                        text[:4000],
-                        chat_id=chat_id,
-                        message_id=loading_msg.message_id,
-                        parse_mode='HTML'
-                    )
-                    remaining = text[4000:]
-                    for i in range(0, len(remaining), 4000):
-                        bot.send_message(chat_id, remaining[i:i+4000], parse_mode='HTML')
-                else:
-                    bot.edit_message_text(
-                        text,
-                        chat_id=chat_id,
-                        message_id=loading_msg.message_id,
-                        parse_mode='HTML'
-                    )
-
-                print(f"✅ تم إرسال الإحصائيات بنجاح. عدد المستخدمين: {total_users}")
-            except Exception as e:
-                print(f"❌ خطأ في الإحصائيات: {e}")
+            if is_banned(uid):
+                break
+            if not is_owner(uid) and get_points(uid) <= 0:
                 try:
-                    bot.edit_message_text(
-                        f"⚠️ حدث خطأ أثناء جمع الإحصائيات:\n{str(e)[:200]}",
-                        chat_id=chat_id,
-                        message_id=loading_msg.message_id,
-                        parse_mode='HTML'
-                    )
-                except:
-                    bot.send_message(chat_id, f"⚠️ حدث خطأ: {str(e)[:100]}")
-
-        threading.Thread(target=send_stats, daemon=True).start()
-        return
-
-    # ========== ✅ المستخدمون النشطون ==========
-    if call.data == "owner_active_users":
-        if not is_owner(user_id):
-            bot.answer_callback_query(call.id, "⛔ هذا الزر للمالك فقط!", show_alert=True)
-            return
-
-        active_list = get_active_users()
-
-        if not active_list:
-            bot.reply_to(call.message, "👥 **لا يوجد مستخدمون نشطون حالياً.**\n\n(النشاط يُحسب خلال آخر 5 دقائق)")
-            return
-
-        text = f"👥 **المستخدمون النشطون حالياً:** ({len(active_list)})\n\n"
-        for uid, last_time in active_list:
-            sessions = load_user_sessions()
-            user_data = sessions.get(str(uid), {})
-            name = user_data.get("first_name", "مستخدم")
-            username = user_data.get("username", "")
-            time_ago = format_time_ago(last_time)
-            if username:
-                text += f"• {name} (@{username}) - نشط {time_ago}\n"
-            else:
-                text += f"• {name} - نشط {time_ago}\n"
-
-        bot.reply_to(call.message, text, parse_mode="Markdown")
-        return
-
-    # ========== عرض رابط الإحالة الخاص بالمستخدم ==========
-    if call.data == "my_referral":
-        referral_link = get_referral_link(user_id)
-        count, points = get_referral_stats(user_id)
-        text = (
-            f"🔗 **رابط الإحالة الخاص بك:**\n"
-            f"`{referral_link}`\n\n"
-            f"📌 **إحصائيات إحالاتك:**\n"
-            f"👥 عدد الإحالات: {count}\n"
-            f"💎 النقاط المكتسبة: {points}\n\n"
-            f"💡 انشر هذا الرابط لأصدقائك، كل شخص ينضم من خلال الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!"
-        )
-        bot.reply_to(call.message, text, parse_mode="Markdown")
-        return
-
-    if call.data == "owner_clear_sessions":
-        if not is_owner(user_id): return
-        save_user_sessions({})
-        bot.answer_callback_query(call.id, "🧹 تم مسح جميع الجلسات!", show_alert=True)
-        return
-
-    if call.data == "owner_help":
-        if not is_owner(user_id): return
-        help_text = (
-            "👑 **أوامر المالك:**\n\n"
-            "🔹 إضافة بروكسي (زر)\n"
-            "🔹 إضافة بروكسيات دفعة (زر)\n"
-            "🔹 تحديث البروكسيات (زر)\n"
-            "🔹 عرض البروكسيات (زر)\n"
-            "🔹 فحص البروكسيات على الخادم (زر)\n"
-            "🔹 حذف التالفة (زر)\n"
-            "🔹 الإحصائيات (زر)\n"
-            "🔹 مسح الجلسات (زر)\n"
-            "🔹 إضافة قناة إجبارية (زر)\n"
-            "🔹 عرض القنوات الإجبارية (زر)\n"
-            "🔹 حذف قناة إجبارية (زر)\n"
-            "🔹 بث رسالة للجميع (زر)\n"
-            "🔹 المستخدمون النشطون (زر)\n"
-            "🔹 إحصائيات الإحالات (زر)\n"
-            "🔹 إعادة تعيين النقاط للجميع (زر)\n\n"
-            "📌 الأوامر النصية:\n"
-            "/start - القائمة الرئيسية\n"
-            "/get_my_id - معرفة رقمك"
-        )
-        bot.reply_to(call.message, help_text, parse_mode="Markdown")
-        return
-
-    # ========== أزرار التحقق من الاشتراك ==========
-    if call.data == "check_sub":
-        sub_ok, sub_type = check_all_subscriptions(user_id)
-        if sub_ok:
-            bot.answer_callback_query(call.id, "✅ تم التحقق! جاري فتح البوت...", show_alert=True)
-            start_command(call.message)
-        else:
-            if sub_type == "telegram":
-                bot.answer_callback_query(call.id, f"❌ اشترك في قناة التلجرام الأساسية: @{CHANNEL_TG}", show_alert=True)
-            elif sub_type == "youtube":
-                bot.answer_callback_query(call.id, "❌ اشترك في قناة اليوتيوب ثم اضغط على زر التأكيد!", show_alert=True)
-            elif sub_type and sub_type.startswith("extra_"):
-                channel = sub_type.replace("extra_", "")
-                bot.answer_callback_query(call.id, f"❌ اشترك في القناة الإضافية: @{channel}", show_alert=True)
-            else:
-                bot.answer_callback_query(call.id, "❌ اشترك في جميع القنوات المطلوبة!", show_alert=True)
-        return
-
-    if call.data == "verify_youtube":
-        if is_subscribed_telegram(user_id):
-            set_user_setting(user_id, YOUTUBE_VERIFY_KEY, True)
-            set_user_setting(user_id, "youtube_verify_date", datetime.now().isoformat())
-            bot.answer_callback_query(call.id, "✅ تم تأكيد اشتراكك في يوتيوب!", show_alert=True)
-            start_command(call.message)
-        else:
-            bot.answer_callback_query(call.id, "❌ اشترك في قناة التلجرام أولاً!", show_alert=True)
-        return
-
-    # ========== أزرار المستخدمين ==========
-    if call.data == "set_referral":
-        bot.answer_callback_query(call.id, "✏️ أرسل كود الإحالة الجديد:")
-        msg = bot.send_message(chat_id, "🔑 أرسل كود الإحالة (يمكن أن يحتوي على أرقام وحروف):")
-        bot.register_next_step_handler(msg, set_referral_step, user_id)
-        return
-
-    if call.data == "set_start":
-        bot.answer_callback_query(call.id, "✏️ أرسل رقم البداية الجديد:")
-        msg = bot.send_message(chat_id, "🔢 أرسل رقم البداية (أرقام فقط):")
-        bot.register_next_step_handler(msg, set_start_step, user_id)
-        return
-
-    if call.data == "start_attack":
-        points = load_user_points(user_id)
-        if not is_owner(user_id) and points <= 0:
-            referral_link = get_referral_link(user_id)
-            keyboard = InlineKeyboardMarkup()
-            btn_link = InlineKeyboardButton("🔗 انسخ رابط الإحالة", callback_data="my_referral")
-            keyboard.add(btn_link)
-            bot.send_message(chat_id,
-                f"⚠️ **لقد نفدت نقاطك!**\n\n"
-                f"📢 شارك رابط الإحالة الخاص بك مع أصدقائك:\n"
-                f"`{referral_link}`\n\n"
-                f"💡 كل شخص ينضم من خلال هذا الرابط **ويشترك في قناتي**، ستحصل على 10 نقاط!",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
-            bot.answer_callback_query(call.id, "⚠️ نقاطك 0! شارك رابط الإحالة للحصول على نقاط جديدة.", show_alert=True)
-            return
-
-        user_id_str = str(user_id)
-        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
-            bot.answer_callback_query(call.id, "⚠️ الهجوم يعمل بالفعل!", show_alert=True)
-            return
-        ref_code = get_user_setting(user_id, "referral_code", None)
-        if not ref_code:
-            bot.answer_callback_query(call.id, "❌ يرجى تعيين كود الإحالة أولاً!", show_alert=True)
-            return
-        bot.answer_callback_query(call.id, "▶️ بدء الهجوم...")
-        attack_status[user_id_str] = {"running": True, "number": get_user_setting(user_id, "start_number", DEFAULT_START)}
-        thread = threading.Thread(target=attack_loop, args=(user_id, chat_id))
-        thread.daemon = True
-        thread.start()
-        attack_status[user_id_str]["thread"] = thread
-        bot.send_message(chat_id, "🚀 تم بدء الهجوم التلقائي! سيتم إرسال التحديثات هنا.")
-        return
-
-    if call.data == "stop_attack":
-        user_id_str = str(user_id)
-        if user_id_str in attack_status and attack_status[user_id_str].get("running", False):
-            attack_status[user_id_str]["running"] = False
-            bot.answer_callback_query(call.id, "⏹️ جاري إيقاف الهجوم...", show_alert=True)
-            bot.send_message(chat_id, "⏹️ تم إيقاف الهجوم.")
-        else:
-            bot.answer_callback_query(call.id, "⚠️ لا يوجد هجوم نشط!", show_alert=True)
-        return
-
-    if call.data == "status":
-        user_id_str = str(user_id)
-        ref_code = get_user_setting(user_id, "referral_code", "غير محدد")
-        start_num = get_user_setting(user_id, "start_number", DEFAULT_START)
-        running = attack_status.get(user_id_str, {}).get("running", False)
-        current_num = attack_status.get(user_id_str, {}).get("number", start_num)
-        points = load_user_points(user_id)
-        used = load_used_numbers(user_id)
-        bot.answer_callback_query(call.id, "📊 جاري عرض الحالة...")
-        bot.send_message(chat_id,
-            f"📊 الحالة الحالية:\n\n"
-            f"🔑 كود الإحالة: {ref_code}\n"
-            f"🔢 رقم البداية: {start_num}\n"
-            f"📌 الرقم التالي: {current_num}\n"
-            f"🔄 حالة الهجوم: {'▶️ يعمل' if running else '⏹️ متوقف'}\n"
-            f"💎 النقاط: {points}\n"
-            f"✅ نجاح: {len(used['success'])}\n"
-            f"⚠️ محال: {len(used['already'])}\n"
-            f"❌ فشل: {len(used['failed'])}\n"
-            f"🌐 بروكسيات: {len(proxies)}"
-        )
-        return
-
-    bot.answer_callback_query(call.id, "⚠️ أمر غير معروف")
-
-# ============================================
-# دوال الخطوات النصية
-# ============================================
-def add_channel_step(message):
-    if not is_owner(message.from_user.id):
-        return
-    channel = message.text.strip().replace("@", "")
-    if not channel:
-        bot.reply_to(message, "❌ يرجى إدخال معرف القناة بشكل صحيح.")
-        return
-    channels = load_extra_channels()
-    if channel in channels:
-        bot.reply_to(message, f"⚠️ القناة @{channel} موجودة مسبقاً.")
-        return
-    channels.append(channel)
-    save_extra_channels(channels)
-    bot.reply_to(message, f"✅ تم إضافة القناة الإجبارية: @{channel}\nسيُطلب من جميع المستخدمين الاشتراك فيها.")
-
-def broadcast_step(message):
-    if not is_owner(message.from_user.id):
-        return
-    text = message.text.strip()
-    if not text:
-        bot.reply_to(message, "❌ لا يمكن إرسال رسالة فارغة.")
-        return
-    sessions = load_user_sessions()
-    if not sessions:
-        bot.reply_to(message, "📭 لا يوجد مستخدمون لإرسال الرسالة إليهم.")
-        return
-    bot.reply_to(message, f"📢 جاري إرسال الرسالة إلى {len(sessions)} مستخدم...")
-    success_count = 0
-    for user_id_str in sessions.keys():
-        try:
-            bot.send_message(int(user_id_str), f"📢 **إعلان من المالك:**\n\n{text}", parse_mode="Markdown")
-            success_count += 1
-            time.sleep(0.1)
-        except Exception as e:
-            print(f"فشل إرسال إلى {user_id_str}: {e}")
-    bot.reply_to(message, f"✅ تم إرسال الرسالة إلى {success_count} من {len(sessions)} مستخدم.")
-
-def add_proxy_step(message):
-    if not is_owner(message.from_user.id):
-        return
-    proxy = message.text.strip()
-    if not proxy.startswith("http://"):
-        proxy = f"http://{proxy}"
-    proxies.append(proxy)
-    save_proxies(proxies)
-    bot.reply_to(message, f"✅ تم إضافة:\n{proxy}\n🌐 العدد: {len(proxies)}")
-
-def process_bulk_proxies(message):
-    global proxies
-    if not is_owner(message.from_user.id):
-        return
-    if message.document:
-        try:
-            file_info = bot.get_file(message.document.file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            content = downloaded_file.decode('utf-8')
-            proxies_list = [p.strip() for p in content.split('\n') if p.strip()]
-        except Exception as e:
-            bot.reply_to(message, f"⚠️ خطأ في قراءة الملف: {e}")
-            return
-    else:
-        content = message.text.strip()
-        if not content:
-            bot.reply_to(message, "❌ لم ترسل أي بروكسيات!")
-            return
-        proxies_list = [p.strip() for p in content.split('\n') if p.strip()]
-
-    if not proxies_list:
-        bot.reply_to(message, "❌ لم يتم العثور على بروكسيات صالحة!")
-        return
-
-    formatted = []
-    for p in proxies_list:
-        if not p.startswith("http://") and not p.startswith("https://"):
-            p = f"http://{p}"
-        formatted.append(p)
-
-    current = load_proxies()
-    current_set = set(current)
-    added = 0
-    for p in formatted:
-        if p not in current_set:
-            current.append(p)
-            current_set.add(p)
-            added += 1
-    save_proxies(current)
-    proxies = current
-    bot.reply_to(message,
-        f"✅ تم إضافة {added} بروكسي جديد.\n"
-        f"🌐 العدد الإجمالي: {len(current)} بروكسي."
-    )
-
-def check_proxies(message):
-    global proxies, dead_proxies
-    if not proxies:
-        bot.reply_to(message, "📭 لا يوجد بروكسيات لفحصها.")
-        return
-
-    bot.reply_to(message, "🔍 جاري فحص البروكسيات على الخادم المستهدف... قد يستغرق هذا دقيقة.")
-
-    working = []
-    dead = []
-    total = len(proxies)
-
-    for i, p in enumerate(proxies, 1):
-        bot.send_message(message.chat.id, f"⏳ اختبار {i}/{total}: {p}")
-        try:
-            test_params = {"referred_user_id": "9999999", "ref_code": "4094894"}
-            test_headers = {"Authorization": TOKEN_API, "User-Agent": "okhttp/5.3.2"}
-            test_proxies = {"http": p, "https": p}
-
-            response = requests.get(
-                BASE_URL,
-                params=test_params,
-                headers=test_headers,
-                proxies=test_proxies,
-                timeout=10
-            )
-
-            if response.status_code == 200:
-                working.append(p)
-                bot.send_message(message.chat.id, f"   ✅ صالح (استجابة {response.status_code})")
-            else:
-                dead.append(p)
-                bot.send_message(message.chat.id, f"   ❌ تالف (كود {response.status_code})")
-
-        except requests.exceptions.Timeout:
-            dead.append(p)
-            bot.send_message(message.chat.id, f"   ⏰ تالف (انتهت المهلة)")
-        except Exception as e:
-            dead.append(p)
-            bot.send_message(message.chat.id, f"   💀 تالف (خطأ: {str(e)[:30]})")
-
-        time.sleep(0.5)
-
-    save_proxies(working)
-    save_dead_proxies(dead)
-    proxies = working
-    dead_proxies = dead
-
-    bot.reply_to(message,
-        f"✅ فحص البروكسيات اكتمل.\n"
-        f"🟢 صالح للاستخدام: {len(working)}\n"
-        f"💀 تالف: {len(dead)}\n"
-        f"تم نقل التالفة إلى dead_proxies.txt\n\n"
-        f"💡 نصيحة: إذا كان العدد الصالح قليلاً، ابحث عن بروكسيات جديدة."
-    )
-
-def set_referral_step(message, user_id):
-    try:
-        value = message.text.strip()
-        if not value:
-            bot.reply_to(message, "❌ يرجى إدخال كود الإحالة (لا تتركه فارغاً)!")
-            return
-        set_user_setting(user_id, "referral_code", value)
-        bot.reply_to(message, f"✅ تم تعيين كود الإحالة إلى: {value}")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ خطأ: {e}")
-
-def set_start_step(message, user_id):
-    try:
-        value = message.text.strip()
-        if not value.isdigit():
-            bot.reply_to(message, "❌ يرجى إدخال أرقام فقط!")
-            return
-        set_user_setting(user_id, "start_number", int(value))
-        bot.reply_to(message, f"✅ تم تعيين رقم البداية إلى: {value}")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ خطأ: {e}")
-
-# ============================================
-# 🖥️ خادم Flask (مع تغيير المنفذ تلقائياً)
-# ============================================
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return jsonify({"status": "bot is running", "uptime": "24/7"}), 200
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    max_attempts = 10
-    for attempt in range(max_attempts):
-        try:
-            app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-            break
-        except OSError as e:
-            if "Address already in use" in str(e):
-                print(f"⚠️ المنفذ {port} مشغول، نجرب {port + 1}...")
-                port += 1
-            else:
-                print(f"❌ خطأ في تشغيل الخادم: {e}")
+                    main_bot.send_message(chat_id, f"⚠️ {get_referral_link(uid)}")
+                except Exception:
+                    pass
                 break
-    else:
-        print("❌ لم نجد منفذاً متاحاً بعد 10 محاولات.")
 
-# ============================================
-# 🚀 تشغيل البوت
-# ============================================
-if __name__ == "__main__":
-    print("="*60)
-    print("🤖 بوت الإحالات - النسخة النهائية (نظام إحالة حقيقي)")
-    print(f"👤 المالك: {OWNER_ID}")
-    print(f"📢 قناة التلجرام الأساسية: @{CHANNEL_TG}")
-    print(f"🎬 قناة اليوتيوب: {CHANNEL_YT}")
-    print(f"🌐 بروكسيات: {len(proxies)}")
-    print(f"💀 تالفة: {len(dead_proxies)}")
-    extra = load_extra_channels()
-    print(f"📢 قنوات إضافية: {len(extra)}")
-    print("="*60)
-    print("🚀 البوت يعمل...")
+            try:
+                proxy = pick_proxy(banned, owner=uid)
+            except Exception as e:
+                log.error(f"pick_proxy err: {e}")
+                proxy = None
 
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+            if proxy:
+                proxy_fallback_notified.pop(uid, None)
+            if not proxy:
+                last_notice = proxy_fallback_notified.get(uid, 0)
+                if time.time() - last_notice > 600:
+                    try:
+                        main_bot.send_message(chat_id, tr(uid, "no_proxies"),
+                                              parse_mode="HTML")
+                        log.info(f"proxy notice sent to {uid}")
+                    except Exception as e:
+                        log.error(f"proxy notice failed: {e}")
+                    proxy_fallback_notified[uid] = time.time()
 
+            attempts += 1
+            attack_status[uid]["attempts"] = attempts
+
+            if mode == "giftcode":
+                target = str(current)
+                current += 1
+                attack_status[uid]["number"] = current
+                res, reason = process_giftcode(uid, target, proxy)
+                if res == "invalid":
+                    continue
+            else:
+                target = uuid.uuid4().hex[:8]
+                res, reason = process_sheep(uid, target, proxy)
+
+            if res == "success":
+                successes += 1
+                attack_status[uid]["success"] = successes
+                if not is_owner(uid):
+                    add_points(uid, -1)
+                if proxy:
+                    proxy_score(proxy, True)
+                try:
+                    main_bot.send_message(OWNER_ID,
+                        f"✅ {mode.upper()} | {get_display(uid)}\n"
+                        f"ID: {uid}\nRemaining: {get_points(uid)}")
+                except Exception:
+                    pass
+            elif res == "already":
+                current += random.randint(5, 40)
+                attack_status[uid]["number"] = current
+                if proxy:
+                    proxy_score(proxy, True)
+            elif res == "invalid":
+                current += random.randint(3, 15)
+                attack_status[uid]["number"] = current
+            elif res in ("same_ip", "rate_limit", "error"):
+                if proxy:
+                    proxy_score(proxy, False)
+                    banned.add(proxy)
+                else:
+                    time.sleep(2)
+            elif res == "failed":
+                if proxy:
+                    proxy_score(proxy, False)
+                time.sleep(0.5)
+
+            if time.time() - last_update > 3 and progress_msg:
+                rate = (successes / attempts * 100) if attempts else 0
+                bar = "█" * int(rate / 10) + "░" * (10 - int(rate / 10))
+                try:
+                    main_bot.edit_message_text(
+                        f"📊 {mode.upper()}\n"
+                        f"🎯 #{attempts} | ✅ {successes}\n"
+                        f"📈 {rate:.1f}% {bar}\n"
+                        f"💎 {get_points(uid)}",
+                        chat_id=chat_id, message_id=progress_msg)
+                    last_update = time.time()
+                except Exception:
+                    pass
+
+        attack_status[uid]["running"] = False
+        _cancel.pop(uid, None)
+        set_user(uid, start_number=current)
+        try:
+            main_bot.send_message(chat_id, f"⏹️ {successes}/{attempts}")
+        except Exception:
+            pass
+    except Exception as e:
+        log.error(f"attack_loop FATAL: {e}")
+        attack_status[uid] = {"running": False}
+        try:
+            main_bot.send_message(chat_id, f"❌ {e}")
+        except Exception:
+            pass
+
+
+queue_jobs = PriorityQueue()
+
+
+def worker():
+    while True:
+        _, uid, chat_id = queue_jobs.get()
+        try:
+            attack_loop(uid, chat_id)
+        except Exception as e:
+            log.error(f"worker: {e}")
+        finally:
+            queue_jobs.task_done()
+
+
+for _ in range(WORKERS):
+    threading.Thread(target=worker, daemon=True).start()
+
+
+# ═══════════════════════ Helpers ═══════════════════════
+def get_display(uid):
+    u = get_user(uid)
+    if not u:
+        return str(uid)
+    n = u["first_name"] or "?"
+    return f"{n} (@{u['username']})" if u["username"] else n
+
+
+def get_referral_link(uid):
+    return f"https://t.me/{BOT_USERNAME}?start={uid}"
+
+
+def find_uid_by_input(s):
+    s = s.strip()
+    if not s:
+        return None
+    if s.lstrip("@").isdigit():
+        return int(s.lstrip("@"))
+    uname = s.lstrip("@").lower()
+    r = db_exec("SELECT user_id FROM users WHERE LOWER(username)=?",
+                (uname,), "one")
+    return r["user_id"] if r else None
+
+
+# ═══════════════════════ Background loops ═══════════════════════
+def auto_harvest_loop():
+    time.sleep(60)
     while True:
         try:
-            bot.polling(none_stop=True, interval=1)
+            if get_setting("gc_auto_enabled", "0") == "1":
+                if not _gc_lock.locked():
+                    with _gc_lock:
+                        log.info("auto_harvest: starting")
+                        res = get_gc().harvest(delay=None)
+                        log.info(f"auto_harvest: {res['ok']} ok, "
+                                 f"{res['gold']} gold, skipped={res['skipped_seen']}")
+                        try:
+                            main_bot.send_message(
+                                OWNER_ID,
+                                f"🤖\n"
+                                f"✅ {res['ok']} | 💰 {res['gold']}\n"
+                                f"🚫 {res['ip_limit']} | 🔁 {res['already']} | ⏭️ {res['skipped_seen']}")
+                        except Exception:
+                            pass
         except Exception as e:
-            print(f"⚠️ خطأ في البوت: {e}")
+            log.error(f"auto_harvest: {e}")
+        time.sleep(GC_AUTO_INTERVAL)
+
+
+# ═══════════════════════ MAIN handlers ═══════════════════════
+@main_bot.message_handler(commands=["start"])
+def main_cmd_start(m):
+    uid = m.from_user.id
+    ensure_user(uid, m.from_user.first_name or "", m.from_user.username or "")
+    if is_banned(uid):
+        main_bot.reply_to(m, tr(uid, "banned"))
+        return
+    ref = None
+    if m.text and m.text.startswith("/start"):
+        p = m.text.split()
+        if len(p) > 1 and p[1].isdigit():
+            ref = int(p[1])
+    if ref and ref != uid:
+        r = db_exec("SELECT new_user FROM referrals WHERE new_user=?", (uid,), "one")
+        if not r:
+            ok, _ = check_subs(uid)
+            if ok:
+                db_exec("INSERT OR IGNORE INTO referrals(new_user,referrer) VALUES(?,?)",
+                        (uid, ref))
+                add_points(ref, REFERRAL_POINTS)
+                main_bot.reply_to(m, f"✅ +{REFERRAL_POINTS}")
+    ok, kind = check_subs(uid)
+    if not ok:
+        kb = InlineKeyboardMarkup(row_width=1)
+        if kind == "telegram":
+            kb.add(InlineKeyboardButton("📢", url=f"https://t.me/{CHANNEL_TG}"))
+        if kind == "youtube":
+            kb.add(InlineKeyboardButton("🎬", callback_data="verify_youtube"))
+        kb.add(InlineKeyboardButton("✅", callback_data="check_sub"))
+        main_bot.reply_to(m, tr(uid, "not_sub"), reply_markup=kb)
+        return
+    main_menu(uid, m.chat.id)
+
+
+@main_bot.message_handler(func=lambda m: m.text == "▶️ Start")
+def main_qs_start(m):
+    uid = m.from_user.id
+    ensure_user(uid)
+    if not attack_status.get(uid, {}).get("running"):
+        attack_status[uid] = {"running": True}
+        queue_jobs.put((0 if is_owner(uid) else -get_points(uid), uid, m.chat.id))
+        main_bot.reply_to(m, tr(uid, "attack_started"))
+
+
+@main_bot.message_handler(func=lambda m: m.text == "⏹️ Stop")
+def main_qs_stop(m):
+    uid = m.from_user.id
+    _cancel[uid] = True
+    if uid in attack_status:
+        attack_status[uid]["running"] = False
+    main_bot.reply_to(m, tr(uid, "stopping"))
+
+
+@main_bot.message_handler(func=lambda m: m.text == "📊 Status")
+def main_qs_status(m):
+    uid = m.from_user.id
+    ensure_user(uid)
+    st = attack_status.get(uid, {}).get("running", False)
+    sts = history_stats(uid)
+    u = get_user(uid)
+    main_bot.reply_to(m, f"📊 {tr(uid,'status')}\n"
+                         f"▶️ {tr(uid,'status_on') if st else tr(uid,'status_off')}\n"
+                         f"💎 {get_points(uid)}\n"
+                         f"🔢 {tr(uid,'start_num')}: {u['start_number'] if u else 0}\n"
+                         f"✅ {sts['success']}")
+
+
+@main_bot.message_handler(func=lambda m: m.text == "🎁 Daily")
+def main_qs_daily(m):
+    do_daily(m.from_user.id, m.chat.id)
+
+
+@main_bot.message_handler(func=lambda m: m.text == "🏆 Top")
+def main_qs_top(m):
+    do_leaderboard(m.chat.id, m.from_user.id)
+
+
+@main_bot.message_handler(func=lambda m: m.text == "📊 Stats")
+def main_qs_stats(m):
+    do_stats(m.from_user.id, m.chat.id)
+
+
+@main_bot.message_handler(func=lambda m: m.text == "🔗 Link")
+def main_qs_link(m):
+    main_bot.reply_to(m, f"🔗 {get_referral_link(m.from_user.id)}")
+
+
+@main_bot.message_handler(func=lambda m: m.text == "🎯 GiftCode")
+def main_qs_gc(m):
+    gc_send(m.chat.id, tr(m.from_user.id, "gc_panel_title"))
+
+
+# ═══════════════════════ Owner commands ═══════════════════════
+@main_bot.message_handler(commands=["reimport"])
+def main_cmd_reimport(m):
+    if not is_owner(m.from_user.id):
+        return
+    u, p = reimport_sessions(verbose=True)
+    main_bot.reply_to(m, f"✅ {u}\n💎 {p}")
+
+
+@main_bot.message_handler(commands=["sessions"])
+def main_cmd_sessions(m):
+    if not is_owner(m.from_user.id):
+        return
+    n = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
+    old = 0
+    sp = os.path.join(OLD_DATA_DIR, "user_sessions.json")
+    if os.path.exists(sp):
+        try:
+            with open(sp, encoding="utf-8") as f:
+                old = len(json.load(f))
+        except Exception:
+            old = -1
+    main_bot.reply_to(m, f"👥 DB: {n}\n📁 JSON: {old if old >= 0 else 'ERR'}")
+
+
+@main_bot.message_handler(commands=["sync"])
+def main_cmd_sync(m):
+    if not is_owner(m.from_user.id):
+        return
+    u, p = reimport_sessions(verbose=True)
+    n = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
+    main_bot.reply_to(m, f"🔄\n+{u}\n+{p}\n={n}")
+
+
+@main_bot.message_handler(commands=["broadcast"])
+def main_cmd_broadcast(m):
+    if not is_owner(m.from_user.id):
+        return
+    text = m.text.replace("/broadcast", "").strip()
+    if not text:
+        main_bot.reply_to(m, "/broadcast TEXT")
+        return
+    users = db_exec("SELECT user_id FROM users WHERE banned=0", fetch="all")
+    sent = failed = 0
+    for row in users:
+        try:
+            main_bot.send_message(row["user_id"], f"📢\n\n{text}")
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+    main_bot.reply_to(m, f"✅ {sent} | ❌ {failed}")
+    audit(m.from_user.id, "broadcast", f"sent={sent},failed={failed}")
+
+
+@main_bot.message_handler(commands=["emergency_stop"])
+def main_cmd_estop(m):
+    if not is_owner(m.from_user.id):
+        return
+    n = 0
+    for uid in list(attack_status.keys()):
+        if attack_status[uid].get("running"):
+            attack_status[uid]["running"] = False
+            _cancel[uid] = True
+            n += 1
+    main_bot.reply_to(m, f"🛑 {n}")
+    audit(m.from_user.id, "estop", str(n))
+
+
+@main_bot.message_handler(commands=["export"])
+def main_cmd_export(m):
+    if not is_owner(m.from_user.id):
+        return
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["uid", "name", "username", "points", "success",
+                "failed", "streak", "lang"])
+    for row in db_exec("SELECT * FROM users", fetch="all"):
+        s = history_stats(row["user_id"])
+        w.writerow([row["user_id"], row["first_name"], row["username"],
+                    row["points"], s["success"], s["failed"],
+                    row["streak"], row["lang"]])
+    bio = io.BytesIO(buf.getvalue().encode("utf-8"))
+    bio.name = "users.csv"
+    main_bot.send_document(m.chat.id, bio)
+
+
+@main_bot.message_handler(commands=["ban"])
+def main_cmd_ban(m):
+    if not is_owner(m.from_user.id):
+        return
+    p = m.text.split()
+    if len(p) != 2:
+        return
+    uid = find_uid_by_input(p[1])
+    if uid:
+        set_user(uid, banned=1)
+        main_bot.reply_to(m, f"🚫 {uid}")
+    audit(m.from_user.id, "ban", str(uid))
+
+
+@main_bot.message_handler(commands=["unban"])
+def main_cmd_unban(m):
+    if not is_owner(m.from_user.id):
+        return
+    p = m.text.split()
+    if len(p) != 2:
+        return
+    uid = find_uid_by_input(p[1])
+    if uid:
+        set_user(uid, banned=0)
+        main_bot.reply_to(m, f"✅ {uid}")
+    audit(m.from_user.id, "unban", str(uid))
+
+
+@main_bot.message_handler(commands=["live"])
+def main_cmd_live(m):
+    if not is_owner(m.from_user.id):
+        return
+    lines = [f"🔴 {get_display(int(uid))} #{attack_status[uid].get('number',0)}"
+             for uid in attack_status if attack_status[uid].get("running")]
+    main_bot.reply_to(m, "📡\n" + ("\n".join(lines) if lines else "-"))
+
+
+@main_bot.message_handler(commands=["auto_harvest"])
+def main_cmd_auto_harvest(m):
+    if not is_owner(m.from_user.id):
+        return
+    arg = m.text.replace("/auto_harvest", "").strip().lower()
+    if arg in ("on", "1", "تشغيل"):
+        set_setting("gc_auto_enabled", "1")
+        main_bot.reply_to(m, "✅ ON")
+    elif arg in ("off", "0", "إيقاف"):
+        set_setting("gc_auto_enabled", "0")
+        main_bot.reply_to(m, "⏹️ OFF")
+    else:
+        cur = get_setting("gc_auto_enabled", "0")
+        main_bot.reply_to(m, f"{'ON' if cur=='1' else 'OFF'}\n/auto_harvest on|off")
+
+
+# ═══════════════════════ MAIN callbacks ═══════════════════════
+@main_bot.callback_query_handler(func=lambda c: True)
+def main_on_callback(c):
+    uid = c.from_user.id
+    chat_id = c.message.chat.id if c.message else uid
+    if is_banned(uid):
+        main_bot.answer_callback_query(c.id, tr(uid, "banned"), show_alert=True)
+        return
+    if rate_limited(uid):
+        main_bot.answer_callback_query(c.id, tr(uid, "rate_limit"), show_alert=True)
+        return
+
+    try:
+        if c.data == "check_sub":
+            ok, _ = check_subs(uid)
+            if ok:
+                main_bot.answer_callback_query(c.id, tr(uid, "done"))
+                main_menu(uid, chat_id)
+            else:
+                main_bot.answer_callback_query(c.id, tr(uid, "not_subscribed"),
+                                               show_alert=True)
+            return
+
+        if c.data == "verify_youtube":
+            set_user(uid, youtube_verified=1,
+                     youtube_date=datetime.now().isoformat())
+            main_bot.answer_callback_query(c.id, tr(uid, "youtube_ok"), show_alert=True)
+            main_menu(uid, chat_id)
+            return
+
+        if c.data == "proxy_help":
+            main_bot.answer_callback_query(c.id)
+            gc_send(chat_id, tr(uid, "proxy_help_text"))
+            return
+
+        if c.data == "toggle_mode":
+            u = get_user(uid) or {}
+            new = "giftsheep" if u.get("mode") == "giftcode" else "giftcode"
+            set_user(uid, mode=new)
+            main_bot.answer_callback_query(c.id, f"🔄 {new.upper()}", show_alert=True)
+            main_menu(uid, chat_id)
+            return
+
+        if c.data == "start_attack":
+            if attack_status.get(uid, {}).get("running"):
+                main_bot.answer_callback_query(c.id, tr(uid, "already_running"),
+                                               show_alert=True)
+                return
+            if not is_owner(uid) and get_points(uid) <= 0:
+                main_bot.answer_callback_query(c.id, tr(uid, "no_points"),
+                                               show_alert=True)
+                return
+            attack_status[uid] = {"running": True}
+            _cancel.pop(uid, None)
+            prio = 0 if is_owner(uid) else -get_points(uid)
+            queue_jobs.put((prio, uid, chat_id))
+            main_bot.answer_callback_query(c.id, tr(uid, "attack_started"),
+                                           show_alert=True)
+            return
+
+        if c.data == "stop_attack":
+            _cancel[uid] = True
+            if uid in attack_status:
+                attack_status[uid]["running"] = False
+            main_bot.answer_callback_query(c.id, "⏹️", show_alert=True)
+            return
+
+        if c.data == "status":
+            st = attack_status.get(uid, {}).get("running", False)
+            s = history_stats(uid)
+            u = get_user(uid)
+            main_bot.answer_callback_query(c.id)
+            main_bot.send_message(chat_id,
+                f"📊\n"
+                f"▶️ {tr(uid,'status_on') if st else tr(uid,'status_off')}\n"
+                f"💎 {get_points(uid)}\n"
+                f"🔢 {tr(uid,'start_num')}: {u['start_number'] if u else 0}\n"
+                f"✅ {s['success']}")
+            return
+
+        if c.data == "my_referral":
+            main_bot.answer_callback_query(c.id)
+            main_bot.send_message(chat_id, f"🔗 {get_referral_link(uid)}")
+            return
+
+        if c.data == "my_stats":
+            main_bot.answer_callback_query(c.id)
+            do_stats(uid, chat_id)
+            return
+
+        if c.data == "leaderboard":
+            main_bot.answer_callback_query(c.id)
+            do_leaderboard(chat_id, uid)
+            return
+
+        if c.data == "daily":
+            main_bot.answer_callback_query(c.id)
+            do_daily(uid, chat_id)
+            return
+
+        if c.data == "lang_menu":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup(row_width=3)
+            kb.add(InlineKeyboardButton("🇾🇪 العربية", callback_data="set_lang_ar"),
+                   InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en"))
+            main_bot.send_message(chat_id, "🌐 Language:", reply_markup=kb)
+            return
+
+        if c.data.startswith("set_lang_"):
+            lang = c.data.replace("set_lang_", "")
+            set_user(uid, lang=lang)
+            main_bot.answer_callback_query(c.id, f"✅ {lang}")
+            main_menu(uid, chat_id)
+            return
+
+        if c.data == "show_quick_menu":
+            main_bot.answer_callback_query(c.id)
+            quick_menu(uid, chat_id)
+            return
+
+        if c.data == "cancel_step":
+            _cancel[uid] = True
+            main_bot.answer_callback_query(c.id, tr(uid, "canceled"), show_alert=True)
+            main_menu(uid, chat_id)
+            return
+
+        if c.data == "set_referral":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup().add(
+                InlineKeyboardButton(tr(uid, "cancel"), callback_data="cancel_step"))
+            msg = main_bot.send_message(chat_id, tr(uid, "send_referral"),
+                                         reply_markup=kb)
+            main_bot.register_next_step_handler(msg, step_set_referral)
+            return
+
+        if c.data == "set_start":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup().add(
+                InlineKeyboardButton(tr(uid, "cancel"), callback_data="cancel_step"))
+            msg = main_bot.send_message(chat_id, tr(uid, "send_start"),
+                                         reply_markup=kb)
+            main_bot.register_next_step_handler(msg, step_set_start)
+            return
+
+        if c.data == "user_add_proxy":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup(row_width=1)
+            kb.add(InlineKeyboardButton(tr(uid, "proxy_help_btn"),
+                                         callback_data="proxy_help"))
+            kb.add(InlineKeyboardButton(tr(uid, "cancel"),
+                                         callback_data="cancel_step"))
+            msg = main_bot.send_message(
+                chat_id,
+                tr(uid, "send_proxy") + "\n\n💡 يمكنك إرسال عدة أسطر — سطر لكل بروكسي",
+                reply_markup=kb)
+            main_bot.register_next_step_handler(msg, step_add_proxy)
+            return
+
+        if c.data == "owner_commands":
+            if not is_owner(uid):
+                main_bot.answer_callback_query(c.id, tr(uid, "owner_only"), show_alert=True)
+                return
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton(tr(uid, "owner_add_proxy"), callback_data="owner_add_proxy"),
+                InlineKeyboardButton(tr(uid, "owner_list_proxies"), callback_data="owner_list_proxies"),
+                InlineKeyboardButton(tr(uid, "owner_test_proxies"), callback_data="owner_test_proxies"),
+                InlineKeyboardButton(tr(uid, "owner_del_proxy"), callback_data="owner_del_proxy"),
+                InlineKeyboardButton(tr(uid, "owner_stats"), callback_data="owner_stats"),
+                InlineKeyboardButton(tr(uid, "owner_edit_points"), callback_data="owner_edit_points"),
+                InlineKeyboardButton(tr(uid, "owner_broadcast"), callback_data="owner_broadcast"),
+                InlineKeyboardButton(tr(uid, "owner_live"), callback_data="owner_live"),
+                InlineKeyboardButton(tr(uid, "owner_estop"), callback_data="owner_estop"),
+                InlineKeyboardButton(tr(uid, "back"), callback_data="start"))
+            main_bot.send_message(chat_id, tr(uid, "owner_panel"), reply_markup=kb)
+            return
+
+        if c.data == "owner_stats":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            do_owner_stats(chat_id)
+            return
+
+        if c.data == "owner_live":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            lines = [f"🔴 {get_display(int(x))} #{attack_status[x].get('number',0)}"
+                     for x in attack_status if attack_status[x].get("running")]
+            main_bot.send_message(chat_id, "📡\n" + ("\n".join(lines) if lines else "-"))
+            return
+
+        if c.data == "owner_estop":
+            if not is_owner(uid):
+                return
+            n = 0
+            for x in list(attack_status.keys()):
+                if attack_status[x].get("running"):
+                    attack_status[x]["running"] = False
+                    _cancel[x] = True
+                    n += 1
+            main_bot.answer_callback_query(c.id, f"🛑 {n}", show_alert=True)
+            return
+
+        if c.data == "owner_broadcast":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            msg = main_bot.send_message(chat_id, tr(uid, "broadcast_hint"))
+            main_bot.register_next_step_handler(msg, step_broadcast)
+            return
+
+        if c.data == "owner_edit_points":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            msg = main_bot.send_message(chat_id, tr(uid, "edit_points_hint"))
+            main_bot.register_next_step_handler(msg, step_edit_points)
+            return
+
+        if c.data == "owner_add_proxy":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            msg = main_bot.send_message(chat_id, tr(uid, "owner_add_proxy_hint"))
+            main_bot.register_next_step_handler(msg, step_owner_add_proxy)
+            return
+
+        if c.data == "owner_list_proxies":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            rows = db_exec("SELECT proxy, success, fail, owner FROM proxies "
+                           "ORDER BY success DESC LIMIT 50", fetch="all")
+            lines = [f"{r['proxy']} ✅{r['success']} ❌{r['fail']} 👤{r['owner']}"
+                     for r in rows]
+            main_bot.send_message(chat_id, "\n".join(lines) if lines else "-")
+            return
+
+        if c.data == "owner_test_proxies":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id, tr(uid, "fetching"), show_alert=True)
+            proxies = all_proxies()
+            alive = batch_test(proxies)
+            main_bot.send_message(chat_id, f"🧪 {len(alive)}/{len(proxies)}")
+            return
+
+        if c.data == "owner_del_proxy":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            msg = main_bot.send_message(chat_id, tr(uid, "owner_del_proxy_hint"))
+            main_bot.register_next_step_handler(msg, step_owner_del_proxy)
+            return
+
+        # GiftCode callbacks
+        if c.data == "gc_panel":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton(tr(uid, "gc_top_gold"), callback_data="gc_top_gold"),
+                InlineKeyboardButton(tr(uid, "gc_top_diamond"), callback_data="gc_top_diamond"),
+                InlineKeyboardButton(tr(uid, "gc_tasks"), callback_data="gc_tasks"),
+                InlineKeyboardButton(tr(uid, "gc_top_refs"), callback_data="gc_top_refs"))
+            if is_owner(uid):
+                kb.add(InlineKeyboardButton(tr(uid, "gc_harvest"), callback_data="gc_harvest"))
+            kb.add(InlineKeyboardButton(tr(uid, "back"), callback_data="start"))
+            gc_send(chat_id, tr(uid, "gc_panel_title"), kb)
+            return
+
+        if c.data == "gc_top_gold":
+            main_bot.answer_callback_query(c.id, tr(uid, "fetching"))
+            try:
+                gc_send(chat_id, render_gold(get_gc().fetch_leaders(), uid, 50))
+            except Exception as e:
+                gc_send(chat_id, tr(uid, "fetch_failed", err=_esc(e)))
+            return
+
+        if c.data == "gc_top_diamond":
+            main_bot.answer_callback_query(c.id, tr(uid, "fetching"))
+            try:
+                gc_send(chat_id, render_diamond(get_gc().fetch_leaders(), uid, 50))
+            except Exception as e:
+                gc_send(chat_id, tr(uid, "fetch_failed", err=_esc(e)))
+            return
+
+        if c.data == "gc_tasks":
+            main_bot.answer_callback_query(c.id, tr(uid, "fetching"))
+            try:
+                gc_send(chat_id, render_tasks(get_gc().fetch_leaders(), uid, 20))
+            except Exception as e:
+                gc_send(chat_id, tr(uid, "fetch_failed", err=_esc(e)))
+            return
+
+        if c.data == "gc_top_refs":
+            main_bot.answer_callback_query(c.id)
+            gc_send(chat_id, render_top_refs(uid, 10))
+            return
+
+        if c.data == "gc_harvest":
+            if not is_owner(uid):
+                main_bot.answer_callback_query(c.id, tr(uid, "owner_only"), show_alert=True)
+                return
+            if _gc_lock.locked():
+                main_bot.answer_callback_query(c.id, tr(uid, "harvest_busy"), show_alert=True)
+                return
+            main_bot.answer_callback_query(c.id, tr(uid, "harvesting"))
+
+            def run_harvest():
+                with _gc_lock:
+                    try:
+                        def cb(i, total, ok, gold):
+                            if i % 5 == 0 or i == total:
+                                try:
+                                    main_bot.send_message(chat_id,
+                                        f"⏳ {i}/{total} | ✅ {ok} | 💰 {gold}")
+                                except Exception:
+                                    pass
+                        res = get_gc().harvest(progress_cb=cb, delay=None)
+                        if res.get("reason"):
+                            main_bot.send_message(chat_id,
+                                tr(uid, "err_generic", err=_esc(res['reason'])))
+                            return
+                        main_bot.send_message(chat_id, tr(uid, "harvest_done",
+                            ok=res['ok'], ip=res['ip_limit'], already=res['already'],
+                            invalid=res['invalid'], skipped=res['skipped_seen'],
+                            gold=res['gold']))
+                        audit(uid, "gc_harvest",
+                              f"ok={res['ok']},gold={res['gold']}")
+                    except Exception as e:
+                        try:
+                            main_bot.send_message(chat_id,
+                                tr(uid, "err_generic", err=_esc(e)))
+                        except Exception:
+                            pass
+
+            threading.Thread(target=run_harvest, daemon=True).start()
+            return
+
+        if c.data == "start":
+            main_bot.answer_callback_query(c.id)
+            main_menu(uid, chat_id)
+            return
+
+        main_bot.answer_callback_query(c.id)
+
+    except Exception as e:
+        log.error(f"main cb err: {e}")
+        try:
+            main_bot.answer_callback_query(c.id, f"⚠️ {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ═══════════════════════ Features ═══════════════════════
+def do_daily(uid, chat_id):
+    u = get_user(uid)
+    if not u:
+        return
+    last = u["last_daily"]
+    streak = u["streak"]
+    now = datetime.now()
+    last_dt = None
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+        except Exception:
+            last_dt = None
+        if last_dt and last_dt.date() == now.date():
+            main_bot.send_message(chat_id, tr(uid, "daily_claimed"))
+            return
+    streak = streak + 1 if last_dt and (now - last_dt).days == 1 else 1
+    reward = DAILY_BASE + min(streak, DAILY_STREAK_MAX) * DAILY_STREAK_BONUS
+    set_user(uid, last_daily=now.isoformat(), streak=streak)
+    add_points(uid, reward)
+    main_bot.send_message(chat_id, tr(uid, "daily_reward", reward=reward, streak=streak))
+
+
+def do_leaderboard(chat_id, uid):
+    rows = db_exec("""SELECT u.user_id, u.first_name, u.username, u.points,
+        (SELECT COUNT(*) FROM history h
+         WHERE h.user_id=u.user_id AND h.result='success') s
+        FROM users u WHERE u.banned=0 ORDER BY s DESC LIMIT 10""", fetch="all")
+    if not rows:
+        main_bot.send_message(chat_id, tr(uid, "nothing"))
+        return
+    lines = [tr(uid, "lb_title"), "━━━━━━━━━━━━━━━━━━━━"]
+    for i, r in enumerate(rows, 1):
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}.".rjust(3)
+        name = r["first_name"] or "?"
+        if r["username"]:
+            name += f"  (@{r['username']})"
+        lines.append(f"{medal}  {html.escape(name)[:30]}")
+        lines.append(f"      ✅ {r['s']} | 💎 {r['points']}")
+        lines.append("")
+    try:
+        main_bot.send_message(chat_id, "\n".join(lines).rstrip(), parse_mode="HTML")
+    except Exception:
+        main_bot.send_message(chat_id, "\n".join(lines).rstrip())
+
+
+def do_stats(uid, chat_id):
+    s = history_stats(uid)
+    total = s["success"] + s["failed"] + s["already"]
+    rate = (s["success"] / total * 100) if total else 0
+    u = get_user(uid)
+    main_bot.send_message(chat_id,
+        f"{tr(uid,'stats_title')}\n━━━━━━━━━━━\n"
+        f"✅ {s['success']}\n❌ {s['failed']}\n🔁 {s['already']}\n"
+        f"📈 {rate:.1f}%\n💎 {u['points']}\n🔥 Streak: {u['streak']}")
+
+
+def do_owner_stats(chat_id):
+    rows = db_exec("SELECT user_id, first_name, username, points FROM users "
+                   "ORDER BY points DESC", fetch="all")
+    if not rows:
+        main_bot.send_message(chat_id, "—")
+        return
+    header = (f"📈 {len(rows)}\n"
+              f"💎 {sum(r['points'] for r in rows)}\n\n")
+    body = ""
+    for i, r in enumerate(rows[:50], 1):
+        s = history_stats(r["user_id"])
+        name = r["first_name"] or "?"
+        if r["username"]:
+            name += f" (@{r['username']})"
+        body += (f"{i}. {name}\n 🆔 {r['user_id']} "
+                 f"💎{r['points']} ✅{s['success']}\n")
+    main_bot.send_message(chat_id, (header + body)[:4000])
+
+
+# ═══════════════════════ Steps ═══════════════════════
+def step_set_referral(m):
+    if _cancel.pop(m.from_user.id, None):
+        return
+    set_user(m.from_user.id, referral_code=m.text.strip())
+    main_bot.reply_to(m, f"✅ {m.text.strip()}")
+    main_menu(m.from_user.id, m.chat.id)
+
+
+def step_set_start(m):
+    if _cancel.pop(m.from_user.id, None):
+        return
+    if m.text.strip().isdigit():
+        set_user(m.from_user.id, start_number=int(m.text.strip()))
+        main_bot.reply_to(m, f"✅ {m.text.strip()}")
+    else:
+        main_bot.reply_to(m, tr(m.from_user.id, "numbers_only"))
+    main_menu(m.from_user.id, m.chat.id)
+
+
+def step_add_proxy(m):
+    """إضافة بروكسيات بالجملة — خاصة بالمستخدم."""
+    if _cancel.pop(m.from_user.id, None):
+        return
+    uid = m.from_user.id
+    text = (m.text or "").strip()
+    if not text:
+        return
+
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    added = 0
+    skipped = 0
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        if add_proxy(line, uid):
+            added += 1
+        else:
+            skipped += 1
+
+    if added:
+        msg = f"✅ {added}"
+        if skipped:
+            msg += f" | ⚠️ {skipped}"
+        main_bot.reply_to(m, msg)
+        try:
+            main_bot.send_message(
+                OWNER_ID,
+                f"🔐 {added} بروكسي من {uid}" + (f" (+{skipped} موجود)" if skipped else ""))
+        except Exception:
+            pass
+    else:
+        main_bot.reply_to(m, tr(uid, "proxy_exists"))
+
+
+def step_owner_add_proxy(m):
+    """إضافة بروكسيات بالجملة — عامة للجميع."""
+    text = (m.text or "").strip()
+    if not text:
+        return
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    added = 0
+    skipped = 0
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        if add_proxy(line, 0):
+            added += 1
+        else:
+            skipped += 1
+    msg = f"✅ {added}"
+    if skipped:
+        msg += f" | ⚠️ {skipped}"
+    main_bot.reply_to(m, msg)
+
+
+def step_owner_del_proxy(m):
+    del_proxy(m.text.strip())
+    main_bot.reply_to(m, "✅")
+
+
+def step_edit_points(m):
+    p = m.text.split()
+    if len(p) != 2:
+        main_bot.reply_to(m, tr(m.from_user.id, "wrong_format"))
+        return
+    uid = find_uid_by_input(p[0])
+    try:
+        pts = int(p[1])
+    except ValueError:
+        main_bot.reply_to(m, tr(m.from_user.id, "numbers_only"))
+        return
+    if uid:
+        set_user(uid, points=pts)
+        main_bot.reply_to(m, f"✅ {uid} = {pts}")
+
+
+def step_broadcast(m):
+    text = m.text.strip()
+    if not text:
+        return
+    users = db_exec("SELECT user_id FROM users WHERE banned=0", fetch="all")
+    sent = failed = 0
+    for row in users:
+        try:
+            main_bot.send_message(row["user_id"], f"📢\n\n{text}")
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+    main_bot.reply_to(m, f"✅ {sent} | ❌ {failed}")
+
+
+# ═══════════════════════ MAIN ═══════════════════════
+if __name__ == "__main__":
+    _init_db()
+    migrate_legacy()
+    u, p = reimport_sessions(verbose=True)
+    log.info(f"Starting bot | GC token: {'OK' if GC_TOKEN else 'MISSING'} "
+             f"| reimport +{u}u +{p}p")
+
+    try:
+        main_bot.delete_webhook(drop_pending_updates=True)
+        log.info("webhook cleared")
+    except Exception as e:
+        log.warning(f"delete_webhook: {e}")
+
+    threading.Thread(target=auto_harvest_loop, daemon=True).start()
+
+    log.info("Polling started")
+    while True:
+        try:
+            main_bot.infinity_polling(timeout=30, long_polling_timeout=20)
+        except Exception as e:
+            log.error(f"polling crashed: {e}")
             time.sleep(5)
