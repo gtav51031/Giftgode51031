@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-# kk.py — Main bot, translated, smart proxy selection, batch add, proxy help
+# kk.py — Main bot + Flask Health + full proxy management
 import os, sys, json, time, random, sqlite3, threading, uuid, csv, io, logging, html
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 from queue import PriorityQueue
 import requests, telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
 
 # ═══════════════════════ CONFIG ═══════════════════════
 MAIN_BOT_TOKEN     = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
@@ -26,6 +27,7 @@ PROXIES_FILE = "proxies.txt"
 AUDIT_LOG = "audit.log"
 WORKERS = 2
 RATE_LIMIT_PER_MIN = 30
+USER_PROXY_LIMIT = 2000   # الحد الأقصى للبروكسيات لكل مستخدم
 
 GC_BASE_URL   = "https://giftcode.betelgeuse.app"
 GC_LEADERS    = f"{GC_BASE_URL}/api/leaders"
@@ -33,6 +35,7 @@ GC_REFER      = f"{GC_BASE_URL}/api/referrer"
 GC_REF_CODE   = "4094894"
 GC_TOKEN      = os.getenv("GC_TOKEN", "")
 GC_AUTO_INTERVAL   = 1800
+PORT              = int(os.getenv("PORT", "10000"))
 
 # ═══════════════════════ LOGGING ═══════════════════════
 logging.basicConfig(
@@ -57,7 +60,7 @@ def _init_db():
             first_name TEXT DEFAULT '',
             username TEXT DEFAULT '',
             lang TEXT DEFAULT 'ar',
-            points INTEGER DEFAULT 50,
+            points INTEGER DEFAULT 20,
             streak INTEGER DEFAULT 0,
             last_daily TEXT DEFAULT '',
             youtube_verified INTEGER DEFAULT 0,
@@ -84,6 +87,7 @@ def _init_db():
             banned INTEGER DEFAULT 0,
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS ix_proxies_owner ON proxies(owner);
         CREATE TABLE IF NOT EXISTS referrals(
             new_user INTEGER PRIMARY KEY,
             referrer INTEGER,
@@ -266,12 +270,12 @@ T = {
     "ar": {
         "welcome": "✨ مرحباً {name}!",
         "points": "نقاطك", "code": "كودك", "mode": "وضع",
-        "start_num": "رقم البداية",
+        "start_num": "رقم البداية", "proxies": "بروكسياتك",
         "success": "نجاح", "choose": "اختر من القائمة:",
         "not_sub": "🔒 اشترك وأكد يوتيوب.", "sub_first": "اشترك أولاً.",
         "start_attack": "▶️ بدء", "stop_attack": "⏹️ إيقاف",
         "toggle_mode": "🔄 تبديل الوضع", "status": "📊 الحالة",
-        "referral": "🔗 رابط الإحالة", "add_proxy": "➕ إضافة بروكسي",
+        "referral": "🔗 رابط الإحالة", "proxy_menu_btn": "🛠️ البروكسيات",
         "proxy_help_btn": "📘 تعليمات البروكسي",
         "owner": "👑 المالك", "set_referral": "🔑 كود الإحالة",
         "set_start": "🔢 رقم البداية", "daily": "🎁 هدية يومية",
@@ -279,6 +283,24 @@ T = {
         "my_stats": "📊 إحصائياتي", "lang": "🌐 اللغة",
         "gc_panel_btn": "🎯 لوحة GiftCode",
         "refs_btn": "🏅 المتصدرون بالإحالة",
+
+        "proxy_menu_title": "🛠️ <b>إدارة البروكسيات</b>\n━━━━━━━━━━━━━━━\nاختر العملية:",
+        "proxy_add_btn": "➕ إضافة بروكسي",
+        "proxy_list_btn": "📋 عرض بروكسياتي",
+        "proxy_test_btn": "🧪 اختبار بروكسياتي",
+        "proxy_del_btn": "🗑️ حذف بروكسياتي",
+        "proxy_back": "🔙 رجوع",
+
+        "my_proxies_title": "📋 <b>بروكسياتك ({total})</b>",
+        "my_proxies_empty": "📭 لا توجد بروكسيات محفوظة.\nاستخدم «➕ إضافة بروكسي» أولاً.",
+        "my_proxies_stats": "✅ {s} | ❌ {f}",
+        "testing_proxies": "🧪 جاري اختبار {n} بروكسي...",
+        "test_result": "🧪 <b>نتيجة الاختبار</b>\n━━━━━━━━━━━━━━━\n✅ حي: {alive}\n❌ ميت: {dead}\n📊 الإجمالي: {total}",
+        "del_proxies_confirm": "⚠️ <b>تأكيد الحذف</b>\n\nهل تريد حذف <b>كل</b> بروكسياتك الخاصة ({n})؟\n\n<i>لا يمكن التراجع.</i>",
+        "del_proxies_yes": "🗑️ نعم، احذف",
+        "del_proxies_done": "✅ تم حذف {n} بروكسي",
+        "no_own_proxies": "📭 لا توجد بروكسيات خاصة بك.",
+        "proxy_limit_reached": "⚠️ وصلت للحد الأقصى ({limit} بروكسي). احذف بعضاً أولاً.",
 
         "gc_panel_title": "🎯 <b>لوحة GiftCode</b>\nاختر من القائمة:",
         "gc_top_gold": "🥇 متصدرون الذهب",
@@ -302,6 +324,8 @@ T = {
         "owner_list_proxies": "📋 القائمة",
         "owner_test_proxies": "🧪 اختبار",
         "owner_del_proxy": "🗑️ حذف",
+        "owner_cleanup": "🧹 تنظيف الميتة",
+        "owner_proxy_stats": "📊 إحصائيات",
         "owner_stats": "📈 إحصائيات",
         "owner_edit_points": "🔧 نقاط",
         "owner_broadcast": "📢 بث",
@@ -327,7 +351,7 @@ T = {
         "no_proxies": ("⚠️ <b>لا توجد بروكسيات في القائمة</b>\n"
                        "━━━━━━━━━━━━━━━\n"
                        "يعمل البوت حالياً <b>باتصال مباشر</b> — النتائج ستكون محدودة.\n\n"
-                       "💡 <b>لتحسين النتائج:</b> أضف بروكسي من الزر «➕ إضافة بروكسي»."),
+                       "💡 <b>لتحسين النتائج:</b> أضف بروكسي من الزر «🛠️ البروكسيات»."),
         "send_proxy": "🔐 أرسل البروكسي:",
         "send_referral": "🔑 أرسل كود الإحالة:",
         "send_start": "🔢 أرسل رقم البداية:",
@@ -386,12 +410,12 @@ T = {
     "en": {
         "welcome": "✨ Welcome {name}!",
         "points": "Points", "code": "Code", "mode": "Mode",
-        "start_num": "Start number",
+        "start_num": "Start number", "proxies": "Your proxies",
         "success": "Success", "choose": "Choose:",
         "not_sub": "🔒 Subscribe & verify YouTube.", "sub_first": "Subscribe first.",
         "start_attack": "▶️ Start", "stop_attack": "⏹️ Stop",
         "toggle_mode": "🔄 Toggle Mode", "status": "📊 Status",
-        "referral": "🔗 Referral Link", "add_proxy": "➕ Add Proxy",
+        "referral": "🔗 Referral Link", "proxy_menu_btn": "🛠️ Proxies",
         "proxy_help_btn": "📘 Proxy Guide",
         "owner": "👑 Owner", "set_referral": "🔑 Referral Code",
         "set_start": "🔢 Start Number", "daily": "🎁 Daily Gift",
@@ -399,6 +423,24 @@ T = {
         "my_stats": "📊 My Stats", "lang": "🌐 Language",
         "gc_panel_btn": "🎯 GiftCode Panel",
         "refs_btn": "🏅 Top Referrers",
+
+        "proxy_menu_title": "🛠️ <b>Proxy Management</b>\n━━━━━━━━━━━━━━━\nChoose:",
+        "proxy_add_btn": "➕ Add Proxy",
+        "proxy_list_btn": "📋 My Proxies",
+        "proxy_test_btn": "🧪 Test My Proxies",
+        "proxy_del_btn": "🗑️ Delete My Proxies",
+        "proxy_back": "🔙 Back",
+
+        "my_proxies_title": "📋 <b>Your Proxies ({total})</b>",
+        "my_proxies_empty": "📭 No saved proxies.\nUse «➕ Add Proxy» first.",
+        "my_proxies_stats": "✅ {s} | ❌ {f}",
+        "testing_proxies": "🧪 Testing {n} proxies...",
+        "test_result": "🧪 <b>Test Result</b>\n━━━━━━━━━━━━━━━\n✅ Alive: {alive}\n❌ Dead: {dead}\n📊 Total: {total}",
+        "del_proxies_confirm": "⚠️ <b>Confirm Delete</b>\n\nDelete <b>all</b> your own proxies ({n})?\n\n<i>Cannot be undone.</i>",
+        "del_proxies_yes": "🗑️ Yes, delete",
+        "del_proxies_done": "✅ Deleted {n} proxies",
+        "no_own_proxies": "📭 No own proxies.",
+        "proxy_limit_reached": "⚠️ Reached max ({limit}). Delete some first.",
 
         "gc_panel_title": "🎯 <b>GiftCode Panel</b>\nChoose:",
         "gc_top_gold": "🥇 Top Gold",
@@ -422,6 +464,8 @@ T = {
         "owner_list_proxies": "📋 List",
         "owner_test_proxies": "🧪 Test",
         "owner_del_proxy": "🗑️ Delete",
+        "owner_cleanup": "🧹 Cleanup Dead",
+        "owner_proxy_stats": "📊 Proxy Stats",
         "owner_stats": "📈 Stats",
         "owner_edit_points": "🔧 Points",
         "owner_broadcast": "📢 Broadcast",
@@ -447,7 +491,7 @@ T = {
         "no_proxies": ("⚠️ <b>No proxies available</b>\n"
                        "━━━━━━━━━━━━━━━\n"
                        "Running with <b>direct connection</b> — limited results.\n\n"
-                       "💡 <b>To improve:</b> add a proxy via «➕ Add Proxy»."),
+                       "💡 <b>To improve:</b> add a proxy via «🛠️ Proxies»."),
         "send_proxy": "🔐 Send the proxy:",
         "send_referral": "🔑 Send the referral code:",
         "send_start": "🔢 Send the start number:",
@@ -550,8 +594,22 @@ def del_proxy(proxy):
     db_exec("DELETE FROM proxies WHERE proxy=?", (proxy,))
 
 
+def count_owner_proxies(uid):
+    """عدد البروكسيات الخاصة بمستخدم."""
+    r = db_exec("SELECT COUNT(*) c FROM proxies WHERE owner=? AND banned=0",
+                (uid,), "one")
+    return r["c"] if r else 0
+
+
+def count_general_proxies():
+    """عدد البروكسيات العامة."""
+    r = db_exec("SELECT COUNT(*) c FROM proxies WHERE owner=0 AND banned=0",
+                fetch="one")
+    return r["c"] if r else 0
+
+
 def all_proxies(owner=None):
-    """owner=None → كل | owner=uid → العامة + الخاصة به. (db_exec يقفل داخلياً — لا deadlock)."""
+    """owner=None → كل | owner=uid → العامة + الخاصة به."""
     file_p = load_file_proxies(PROXIES_FILE)
 
     if owner is None:
@@ -569,6 +627,16 @@ def all_proxies(owner=None):
             seen.add(p)
             out.append(p)
     return out
+
+
+def user_own_proxies(uid, limit=100):
+    """بروكسيات المستخدم الخاصة فقط."""
+    rows = db_exec(
+        """SELECT proxy, success, fail FROM proxies
+           WHERE owner=? AND banned=0
+           ORDER BY success DESC, added_at DESC LIMIT ?""",
+        (uid, limit), "all")
+    return rows
 
 
 def test_proxy(proxy, timeout=6):
@@ -595,7 +663,6 @@ def proxy_score(proxy, success):
 
 
 def best_proxies(n=30, owner=None):
-    """أعلى البروكسيات من حيث نسبة النجاح — بلا deadlock."""
     if owner is None:
         rows = db_exec(
             """SELECT proxy, success, fail FROM proxies
@@ -613,9 +680,7 @@ def best_proxies(n=30, owner=None):
 
 
 def pick_proxy(banned, owner=None):
-    """
-    اختيار ذكي: 70% من المميزين (نسبة نجاح عالية) + 30% عشوائي.
-    """
+    """اختيار ذكي: 70% من المميزين + 30% عشوائي."""
     pool = all_proxies(owner)
     if not pool:
         return None
@@ -857,6 +922,27 @@ def gc_send(chat_id, text, reply_markup=None):
             log.error(f"gc_send: {e}")
 
 
+def send_long(chat_id, text, reply_markup=None, max_len=3800):
+    """إرسال رسائل طويلة عبر تقسيمها إلى أجزاء."""
+    if len(text) <= max_len:
+        gc_send(chat_id, text, reply_markup)
+        return
+    lines = text.split("\n")
+    chunks = []
+    cur = ""
+    for line in lines:
+        if len(cur) + len(line) + 1 > max_len:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = cur + "\n" + line if cur else line
+    if cur:
+        chunks.append(cur)
+    for i, ch in enumerate(chunks):
+        rm = reply_markup if i == len(chunks) - 1 else None
+        gc_send(chat_id, ch, rm)
+
+
 # ═══════════ Renderers ═══════════
 def render_gold(leaders, uid, top=50):
     gold = leaders.get("gold", [])[:top]
@@ -987,13 +1073,49 @@ def firebase_refer(token, code, proxy=None):
         return False, str(e)
 
 
-# ═══════════════════════ BOT ═══════════════════════
+# ═══════════════════════ BOT + FLASK ═══════════════════════
 main_bot = telebot.TeleBot(MAIN_BOT_TOKEN, parse_mode=None)
+
+# ═══════════ Flask Health Server ═══════════
+health_app = Flask("health")
+
+
+@health_app.route("/")
+@health_app.route("/health")
+def _health_route():
+    try:
+        n_users = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
+    except Exception:
+        n_users = -1
+    try:
+        n_proxies = db_exec("SELECT COUNT(*) c FROM proxies WHERE banned=0",
+                            fetch="one")["c"]
+    except Exception:
+        n_proxies = -1
+    running = sum(1 for u in attack_status if attack_status[u].get("running"))
+    return {
+        "status": "ok",
+        "bot": "running",
+        "users": n_users,
+        "proxies": n_proxies,
+        "active_attacks": running,
+        "time": datetime.now().isoformat(),
+    }, 200
+
+
+def run_health_server():
+    try:
+        health_app.run(host="0.0.0.0", port=PORT,
+                       debug=False, use_reloader=False, threaded=True)
+    except Exception as e:
+        log.error(f"health server: {e}")
+
 
 attack_status, attack_mode = {}, {}
 _cancel = {}
 _gc_lock = threading.Lock()
 proxy_fallback_notified = {}
+_pending_del = {}   # لتأكيد حذف البروكسيات
 
 
 def is_owner(uid): return str(uid) == str(OWNER_ID)
@@ -1047,6 +1169,10 @@ def main_menu(uid, chat_id):
     name = u["first_name"] or "user"
     mode = u["mode"]
     start_num = u["start_number"] or 0
+    own_proxies = count_owner_proxies(uid)
+    gen_proxies = count_general_proxies()
+    total_avail = gen_proxies + own_proxies
+
     kb = InlineKeyboardMarkup(row_width=2)
     if mode == "giftcode":
         kb.add(InlineKeyboardButton(tr(uid, "set_referral"), callback_data="set_referral"),
@@ -1059,8 +1185,7 @@ def main_menu(uid, chat_id):
         InlineKeyboardButton(tr(uid, "toggle_mode"), callback_data="toggle_mode"),
         InlineKeyboardButton(tr(uid, "status"), callback_data="status"),
         InlineKeyboardButton(tr(uid, "referral"), callback_data="my_referral"),
-        InlineKeyboardButton(tr(uid, "add_proxy"), callback_data="user_add_proxy"),
-        InlineKeyboardButton(tr(uid, "proxy_help_btn"), callback_data="proxy_help"),
+        InlineKeyboardButton(tr(uid, "proxy_menu_btn"), callback_data="proxy_menu"),
         InlineKeyboardButton(tr(uid, "daily"), callback_data="daily"),
         InlineKeyboardButton(tr(uid, "leaderboard"), callback_data="leaderboard"),
         InlineKeyboardButton(tr(uid, "my_stats"), callback_data="my_stats"),
@@ -1071,19 +1196,22 @@ def main_menu(uid, chat_id):
     )
     if is_owner(uid):
         kb.add(InlineKeyboardButton(tr(uid, "owner"), callback_data="owner_commands"))
+
     stats = history_stats(uid)
     text = (f"{tr(uid,'welcome', name=name)}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"💎 {tr(uid,'points')}: {u['points']}\n"
             f"🔑 {tr(uid,'code')}: {u['referral_code']}\n"
             f"🔢 {tr(uid,'start_num')}: {start_num}\n"
+            f"🌐 {tr(uid,'proxies')}: {total_avail} "
+            f"(<i>{gen_proxies}+{own_proxies}</i>)\n"
             f"🔄 {tr(uid,'mode')}: {mode.upper()}\n"
             f"✅ {tr(uid,'success')}: {stats['success']}\n"
             f"🔥 Streak: {u['streak']}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"{tr(uid,'choose')}")
     try:
-        main_bot.send_message(chat_id, text, reply_markup=kb)
+        main_bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         log.error(f"main_menu: {e}")
 
@@ -1399,10 +1527,13 @@ def main_qs_status(m):
     st = attack_status.get(uid, {}).get("running", False)
     sts = history_stats(uid)
     u = get_user(uid)
+    own = count_owner_proxies(uid)
+    gen = count_general_proxies()
     main_bot.reply_to(m, f"📊 {tr(uid,'status')}\n"
                          f"▶️ {tr(uid,'status_on') if st else tr(uid,'status_off')}\n"
                          f"💎 {get_points(uid)}\n"
                          f"🔢 {tr(uid,'start_num')}: {u['start_number'] if u else 0}\n"
+                         f"🌐 {tr(uid,'proxies')}: {gen+own} ({gen}+{own})\n"
                          f"✅ {sts['success']}")
 
 
@@ -1606,6 +1737,96 @@ def main_on_callback(c):
             gc_send(chat_id, tr(uid, "proxy_help_text"))
             return
 
+        # ═══════ قائمة البروكسيات للمستخدم ═══════
+        if c.data == "proxy_menu":
+            main_bot.answer_callback_query(c.id)
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton(tr(uid, "proxy_add_btn"), callback_data="user_add_proxy"),
+                InlineKeyboardButton(tr(uid, "proxy_list_btn"), callback_data="user_my_proxies"))
+            kb.add(
+                InlineKeyboardButton(tr(uid, "proxy_test_btn"), callback_data="user_test_my_proxies"),
+                InlineKeyboardButton(tr(uid, "proxy_del_btn"), callback_data="user_del_my_proxies"))
+            kb.add(
+                InlineKeyboardButton(tr(uid, "proxy_help_btn"), callback_data="proxy_help"))
+            kb.add(
+                InlineKeyboardButton(tr(uid, "proxy_back"), callback_data="start"))
+            gc_send(chat_id, tr(uid, "proxy_menu_title"), kb)
+            return
+
+        if c.data == "user_my_proxies":
+            main_bot.answer_callback_query(c.id)
+            rows = user_own_proxies(uid, limit=80)
+            if not rows:
+                gc_send(chat_id, tr(uid, "my_proxies_empty"))
+                return
+            total = count_owner_proxies(uid)
+            lines = [tr(uid, "my_proxies_title", total=total), "━━━━━━━━━━━━━━━"]
+            for i, r in enumerate(rows, 1):
+                s = r["success"] or 0
+                f = r["fail"] or 0
+                lines.append(f"{i}. <code>{_esc(r['proxy'])}</code>")
+                lines.append(f"   {tr(uid, 'my_proxies_stats', s=s, f=f)}")
+            if total > len(rows):
+                lines.append("")
+                lines.append(f"<i>... +{total - len(rows)} أخرى</i>")
+            send_long(chat_id, "\n".join(lines))
+            return
+
+        if c.data == "user_test_my_proxies":
+            rows = user_own_proxies(uid, limit=200)
+            if not rows:
+                main_bot.answer_callback_query(c.id, tr(uid, "no_own_proxies"),
+                                               show_alert=True)
+                return
+            main_bot.answer_callback_query(c.id, tr(uid, "testing_proxies",
+                                                     n=len(rows)))
+            proxy_list = [r["proxy"] for r in rows]
+
+            def _test_thread():
+                try:
+                    alive = batch_test(proxy_list, workers=30)
+                    dead = len(proxy_list) - len(alive)
+                    gc_send(chat_id, tr(uid, "test_result",
+                                        alive=len(alive), dead=dead,
+                                        total=len(proxy_list)))
+                    # علّم الميتة
+                    alive_set = set(alive)
+                    for p in proxy_list:
+                        if p not in alive_set:
+                            proxy_score(p, False)
+                except Exception as e:
+                    gc_send(chat_id, tr(uid, "err_generic", err=_esc(e)))
+
+            threading.Thread(target=_test_thread, daemon=True).start()
+            return
+
+        if c.data == "user_del_my_proxies":
+            n = count_owner_proxies(uid)
+            if n == 0:
+                main_bot.answer_callback_query(c.id, tr(uid, "no_own_proxies"),
+                                               show_alert=True)
+                return
+            main_bot.answer_callback_query(c.id)
+            _pending_del[uid] = True
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton(tr(uid, "del_proxies_yes"), callback_data="user_del_confirm"),
+                InlineKeyboardButton(tr(uid, "cancel"), callback_data="cancel_step"))
+            gc_send(chat_id, tr(uid, "del_proxies_confirm", n=n), kb)
+            return
+
+        if c.data == "user_del_confirm":
+            if not _pending_del.get(uid):
+                main_bot.answer_callback_query(c.id, "⚠️", show_alert=True)
+                return
+            _pending_del.pop(uid, None)
+            n = count_owner_proxies(uid)
+            db_exec("DELETE FROM proxies WHERE owner=?", (uid,))
+            main_bot.answer_callback_query(c.id, tr(uid, "del_proxies_done", n=n),
+                                           show_alert=True)
+            return
+
         if c.data == "toggle_mode":
             u = get_user(uid) or {}
             new = "giftsheep" if u.get("mode") == "giftcode" else "giftcode"
@@ -1642,12 +1863,15 @@ def main_on_callback(c):
             st = attack_status.get(uid, {}).get("running", False)
             s = history_stats(uid)
             u = get_user(uid)
+            own = count_owner_proxies(uid)
+            gen = count_general_proxies()
             main_bot.answer_callback_query(c.id)
             main_bot.send_message(chat_id,
                 f"📊\n"
                 f"▶️ {tr(uid,'status_on') if st else tr(uid,'status_off')}\n"
                 f"💎 {get_points(uid)}\n"
                 f"🔢 {tr(uid,'start_num')}: {u['start_number'] if u else 0}\n"
+                f"🌐 {tr(uid,'proxies')}: {gen+own} ({gen}+{own})\n"
                 f"✅ {s['success']}")
             return
 
@@ -1692,6 +1916,7 @@ def main_on_callback(c):
             return
 
         if c.data == "cancel_step":
+            _pending_del.pop(uid, None)
             _cancel[uid] = True
             main_bot.answer_callback_query(c.id, tr(uid, "canceled"), show_alert=True)
             main_menu(uid, chat_id)
@@ -1716,6 +1941,11 @@ def main_on_callback(c):
             return
 
         if c.data == "user_add_proxy":
+            if count_owner_proxies(uid) >= USER_PROXY_LIMIT:
+                main_bot.answer_callback_query(
+                    c.id, tr(uid, "proxy_limit_reached", limit=USER_PROXY_LIMIT),
+                    show_alert=True)
+                return
             main_bot.answer_callback_query(c.id)
             kb = InlineKeyboardMarkup(row_width=1)
             kb.add(InlineKeyboardButton(tr(uid, "proxy_help_btn"),
@@ -1740,6 +1970,8 @@ def main_on_callback(c):
                 InlineKeyboardButton(tr(uid, "owner_list_proxies"), callback_data="owner_list_proxies"),
                 InlineKeyboardButton(tr(uid, "owner_test_proxies"), callback_data="owner_test_proxies"),
                 InlineKeyboardButton(tr(uid, "owner_del_proxy"), callback_data="owner_del_proxy"),
+                InlineKeyboardButton(tr(uid, "owner_cleanup"), callback_data="owner_cleanup"),
+                InlineKeyboardButton(tr(uid, "owner_proxy_stats"), callback_data="owner_proxy_stats"),
                 InlineKeyboardButton(tr(uid, "owner_stats"), callback_data="owner_stats"),
                 InlineKeyboardButton(tr(uid, "owner_edit_points"), callback_data="owner_edit_points"),
                 InlineKeyboardButton(tr(uid, "owner_broadcast"), callback_data="owner_broadcast"),
@@ -1806,10 +2038,74 @@ def main_on_callback(c):
                 return
             main_bot.answer_callback_query(c.id)
             rows = db_exec("SELECT proxy, success, fail, owner FROM proxies "
-                           "ORDER BY success DESC LIMIT 50", fetch="all")
-            lines = [f"{r['proxy']} ✅{r['success']} ❌{r['fail']} 👤{r['owner']}"
-                     for r in rows]
-            main_bot.send_message(chat_id, "\n".join(lines) if lines else "-")
+                           "ORDER BY success DESC LIMIT 300", fetch="all")
+            if not rows:
+                main_bot.send_message(chat_id, "—")
+                return
+            lines = ["📋 <b>قائمة البروكسيات</b>", "━━━━━━━━━━━━━━━"]
+            gen = 0; own = 0
+            for i, r in enumerate(rows, 1):
+                if r["owner"] == 0:
+                    gen += 1
+                else:
+                    own += 1
+                tag = "🌐" if r["owner"] == 0 else f"👤{r['owner']}"
+                lines.append(f"{i}. {tag} <code>{_esc(r['proxy'])}</code>")
+                lines.append(f"   ✅{r['success']} ❌{r['fail']}")
+            lines.insert(2, f"🌐 عامة: {gen} | 👤 خاصة: {own}")
+            send_long(chat_id, "\n".join(lines))
+            return
+
+        if c.data == "owner_proxy_stats":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id)
+            total = db_exec("SELECT COUNT(*) c FROM proxies WHERE banned=0",
+                            fetch="one")["c"]
+            general = count_general_proxies()
+            own = total - general
+            with_s = db_exec("SELECT COUNT(*) c FROM proxies WHERE success>0",
+                             fetch="one")["c"]
+            with_f = db_exec("SELECT COUNT(*) c FROM proxies WHERE fail>0",
+                             fetch="one")["c"]
+            top = db_exec("""SELECT proxy, success, fail FROM proxies
+                             WHERE success>0
+                             ORDER BY CAST(success AS REAL)/(success+fail+1) DESC
+                             LIMIT 5""", fetch="all")
+            lines = [
+                "📊 <b>إحصائيات البروكسيات</b>",
+                "━━━━━━━━━━━━━━━",
+                f"🌐 عامة: {general}",
+                f"👤 خاصة: {own}",
+                f"📦 إجمالي: {total}",
+                f"✅ لها نجاح: {with_s}",
+                f"❌ لها فشل: {with_f}",
+                "",
+                "🏆 <b>الأفضل:</b>",
+            ]
+            for i, r in enumerate(top, 1):
+                lines.append(f"{i}. ✅{r['success']} ❌{r['fail']}")
+                lines.append(f"   <code>{_esc(r['proxy'])}</code>")
+            send_long(chat_id, "\n".join(lines))
+            return
+
+        if c.data == "owner_cleanup":
+            if not is_owner(uid):
+                return
+            main_bot.answer_callback_query(c.id, "🧹 ...", show_alert=True)
+
+            def _clean():
+                try:
+                    # احذف: banned=1 أو (fail>success و fail>=5)
+                    db_exec("DELETE FROM proxies WHERE banned=1")
+                    db_exec("DELETE FROM proxies WHERE fail>success AND fail>=5")
+                    left = db_exec("SELECT COUNT(*) c FROM proxies WHERE banned=0",
+                                   fetch="one")["c"]
+                    main_bot.send_message(chat_id, f"🧹 تم التنظيف\n📦 متبقٍ: {left}")
+                except Exception as e:
+                    main_bot.send_message(chat_id, f"❌ {e}")
+
+            threading.Thread(target=_clean, daemon=True).start()
             return
 
         if c.data == "owner_test_proxies":
@@ -1980,10 +2276,14 @@ def do_stats(uid, chat_id):
     total = s["success"] + s["failed"] + s["already"]
     rate = (s["success"] / total * 100) if total else 0
     u = get_user(uid)
+    own = count_owner_proxies(uid)
+    gen = count_general_proxies()
     main_bot.send_message(chat_id,
         f"{tr(uid,'stats_title')}\n━━━━━━━━━━━\n"
         f"✅ {s['success']}\n❌ {s['failed']}\n🔁 {s['already']}\n"
-        f"📈 {rate:.1f}%\n💎 {u['points']}\n🔥 Streak: {u['streak']}")
+        f"📈 {rate:.1f}%\n💎 {u['points']}\n"
+        f"🌐 {tr(uid,'proxies')}: {gen+own} ({gen}+{own})\n"
+        f"🔥 Streak: {u['streak']}")
 
 
 def do_owner_stats(chat_id):
@@ -2034,12 +2334,19 @@ def step_add_proxy(m):
     if not text:
         return
 
+    current = count_owner_proxies(uid)
+    if current >= USER_PROXY_LIMIT:
+        main_bot.reply_to(m, tr(uid, "proxy_limit_reached", limit=USER_PROXY_LIMIT))
+        return
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     added = 0
     skipped = 0
     for line in lines:
         if line.startswith("#"):
             continue
+        if current + added >= USER_PROXY_LIMIT:
+            break
         if add_proxy(line, uid):
             added += 1
         else:
@@ -2125,6 +2432,10 @@ if __name__ == "__main__":
     u, p = reimport_sessions(verbose=True)
     log.info(f"Starting bot | GC token: {'OK' if GC_TOKEN else 'MISSING'} "
              f"| reimport +{u}u +{p}p")
+
+    # Flask health server (thread منفصل)
+    threading.Thread(target=run_health_server, daemon=True).start()
+    log.info(f"Health server on 0.0.0.0:{PORT}")
 
     try:
         main_bot.delete_webhook(drop_pending_updates=True)
