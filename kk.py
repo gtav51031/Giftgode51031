@@ -9,7 +9,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 
 # ═══════════════════════ CONFIG ═══════════════════════
-MAIN_BOT_TOKEN     = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
+MAIN_BOT_TOKEN     = "8805691874:AAF9qAn8-AkGYaeq7xxKUZRlFsDHa5sQzz0"
 OWNER_ID = 6366853738
 CHANNEL_TG = "thaish12"
 CHANNEL_YT = "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s"
