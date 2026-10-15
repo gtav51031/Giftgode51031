@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# kk.py — Main bot + Flask Health + full proxy management
+# kk.py — Main bot + Flask Health + Self-Ping + Robust Polling
 import os, sys, json, time, random, sqlite3, threading, uuid, csv, io, logging, html
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
@@ -9,7 +9,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 
 # ═══════════════════════ CONFIG ═══════════════════════
-MAIN_BOT_TOKEN     = "8805691874:AAF9qAn8-AkGYaeq7xxKUZRlFsDHa5sQzz0"
+MAIN_BOT_TOKEN     = "8710044999:AAGsGCewdnb4sqrwE8dkRfQErKvLklpwP8M"
 OWNER_ID = 6366853738
 CHANNEL_TG = "thaish12"
 CHANNEL_YT = "https://youtube.com/@tahish159?si=5ehTRVzB7WOnOj5s"
@@ -27,7 +27,8 @@ PROXIES_FILE = "proxies.txt"
 AUDIT_LOG = "audit.log"
 WORKERS = 2
 RATE_LIMIT_PER_MIN = 30
-USER_PROXY_LIMIT = 2000   # الحد الأقصى للبروكسيات لكل مستخدم
+USER_PROXY_LIMIT = 2000
+SELF_PING_INTERVAL = 600   # كل 10 دقائق
 
 GC_BASE_URL   = "https://giftcode.betelgeuse.app"
 GC_LEADERS    = f"{GC_BASE_URL}/api/leaders"
@@ -595,23 +596,19 @@ def del_proxy(proxy):
 
 
 def count_owner_proxies(uid):
-    """عدد البروكسيات الخاصة بمستخدم."""
     r = db_exec("SELECT COUNT(*) c FROM proxies WHERE owner=? AND banned=0",
                 (uid,), "one")
     return r["c"] if r else 0
 
 
 def count_general_proxies():
-    """عدد البروكسيات العامة."""
     r = db_exec("SELECT COUNT(*) c FROM proxies WHERE owner=0 AND banned=0",
                 fetch="one")
     return r["c"] if r else 0
 
 
 def all_proxies(owner=None):
-    """owner=None → كل | owner=uid → العامة + الخاصة به."""
     file_p = load_file_proxies(PROXIES_FILE)
-
     if owner is None:
         rows = db_exec("SELECT proxy FROM proxies WHERE banned=0", fetch="all")
     else:
@@ -619,7 +616,6 @@ def all_proxies(owner=None):
             "SELECT proxy FROM proxies WHERE banned=0 AND (owner=0 OR owner=?)",
             (owner,), "all")
     db_p = [r["proxy"] for r in rows]
-
     seen = set()
     out = []
     for p in file_p + db_p:
@@ -630,7 +626,6 @@ def all_proxies(owner=None):
 
 
 def user_own_proxies(uid, limit=100):
-    """بروكسيات المستخدم الخاصة فقط."""
     rows = db_exec(
         """SELECT proxy, success, fail FROM proxies
            WHERE owner=? AND banned=0
@@ -680,21 +675,16 @@ def best_proxies(n=30, owner=None):
 
 
 def pick_proxy(banned, owner=None):
-    """اختيار ذكي: 70% من المميزين + 30% عشوائي."""
     pool = all_proxies(owner)
     if not pool:
         return None
-
     available = [p for p in pool if p not in banned]
     if not available:
         return None
-
     ranked = best_proxies(30, owner)
     preferred = [p for p in ranked if p in available]
-
     if preferred and random.random() < 0.7:
         return random.choice(preferred)
-
     return random.choice(available)
 
 
@@ -923,7 +913,6 @@ def gc_send(chat_id, text, reply_markup=None):
 
 
 def send_long(chat_id, text, reply_markup=None, max_len=3800):
-    """إرسال رسائل طويلة عبر تقسيمها إلى أجزاء."""
     if len(text) <= max_len:
         gc_send(chat_id, text, reply_markup)
         return
@@ -1076,7 +1065,6 @@ def firebase_refer(token, code, proxy=None):
 # ═══════════════════════ BOT + FLASK ═══════════════════════
 main_bot = telebot.TeleBot(MAIN_BOT_TOKEN, parse_mode=None)
 
-# ═══════════ Flask Health Server ═══════════
 health_app = Flask("health")
 
 
@@ -1115,7 +1103,7 @@ attack_status, attack_mode = {}, {}
 _cancel = {}
 _gc_lock = threading.Lock()
 proxy_fallback_notified = {}
-_pending_del = {}   # لتأكيد حذف البروكسيات
+_pending_del = {}
 
 
 def is_owner(uid): return str(uid) == str(OWNER_ID)
@@ -1466,6 +1454,35 @@ def auto_harvest_loop():
         time.sleep(GC_AUTO_INTERVAL)
 
 
+def self_ping_loop():
+    """يرسل طلب HTTP إلى الرابط العام للبوت كل 10 دقائق — يمنع Render من النوم."""
+    time.sleep(90)
+    own_url = (os.getenv("RENDER_EXTERNAL_URL")
+               or os.getenv("SELF_URL")
+               or "").rstrip("/")
+    if not own_url:
+        log.warning("self_ping: RENDER_EXTERNAL_URL missing — disabled. "
+                    "Add it in Render Environment.")
+        return
+    ping_url = f"{own_url}/health"
+    log.info(f"self_ping: pinging {ping_url} every {SELF_PING_INTERVAL}s")
+    fails = 0
+    while True:
+        try:
+            r = requests.get(ping_url, timeout=15)
+            if r.status_code == 200:
+                if fails:
+                    log.info(f"self_ping: recovered after {fails} fails")
+                fails = 0
+            else:
+                fails += 1
+                log.warning(f"self_ping: status {r.status_code} (fails={fails})")
+        except Exception as e:
+            fails += 1
+            log.warning(f"self_ping: {e} (fails={fails})")
+        time.sleep(SELF_PING_INTERVAL)
+
+
 # ═══════════════════════ MAIN handlers ═══════════════════════
 @main_bot.message_handler(commands=["start"])
 def main_cmd_start(m):
@@ -1594,6 +1611,79 @@ def main_cmd_sync(m):
     u, p = reimport_sessions(verbose=True)
     n = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
     main_bot.reply_to(m, f"🔄\n+{u}\n+{p}\n={n}")
+
+
+@main_bot.message_handler(commands=["setallpoints"])
+def main_cmd_setallpoints(m):
+    if not is_owner(m.from_user.id):
+        return
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        main_bot.reply_to(m,
+            "🔧 <b>تعيين نقاط الجميع</b>\n"
+            "الاستخدام: <code>/setallpoints 10</code>",
+            parse_mode="HTML")
+        return
+    try:
+        val = int(parts[1].strip())
+    except ValueError:
+        main_bot.reply_to(m, "❌ الرقم غير صحيح.")
+        return
+    n = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
+    db_exec("UPDATE users SET points=?", (val,))
+    main_bot.reply_to(m,
+        f"✅ <b>تم التعديل</b>\n"
+        f"👥 {n} مستخدم\n"
+        f"💎 {val}",
+        parse_mode="HTML")
+    audit(m.from_user.id, "setallpoints", f"val={val},count={n}")
+
+
+@main_bot.message_handler(commands=["addallpoints"])
+def main_cmd_addallpoints(m):
+    if not is_owner(m.from_user.id):
+        return
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        main_bot.reply_to(m, "الاستخدام: /addallpoints +50 أو /addallpoints -10")
+        return
+    val_s = parts[1].strip().replace(" ", "")
+    try:
+        val = int(val_s)
+    except ValueError:
+        main_bot.reply_to(m, "❌ الرقم غير صحيح.")
+        return
+    n = db_exec("SELECT COUNT(*) c FROM users", fetch="one")["c"]
+    db_exec("UPDATE users SET points=points+?", (val,))
+    db_exec("UPDATE users SET points=0 WHERE points<0")
+    main_bot.reply_to(m,
+        f"✅ <b>{'+' if val>0 else ''}{val}</b> لكل المستخدمين\n"
+        f"👥 {n} مستخدم",
+        parse_mode="HTML")
+    audit(m.from_user.id, "addallpoints", f"val={val},count={n}")
+
+
+@main_bot.message_handler(commands=["points_stats"])
+def main_cmd_points_stats(m):
+    if not is_owner(m.from_user.id):
+        return
+    r = db_exec(
+        """SELECT COUNT(*) AS total,
+                  SUM(points) AS sum,
+                  AVG(points) AS avg,
+                  MIN(points) AS min,
+                  MAX(points) AS max
+           FROM users""", fetch="one")
+    avg = r["avg"] if r["avg"] is not None else 0
+    main_bot.reply_to(m,
+        f"💎 <b>إحصائيات النقاط</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"👥 مستخدمون: {r['total']}\n"
+        f"💰 المجموع: {r['sum'] or 0}\n"
+        f"📊 المتوسط: {avg:.1f}\n"
+        f"⬇️ الأدنى: {r['min'] or 0}\n"
+        f"⬆️ الأعلى: {r['max'] or 0}",
+        parse_mode="HTML")
 
 
 @main_bot.message_handler(commands=["broadcast"])
@@ -1737,7 +1827,6 @@ def main_on_callback(c):
             gc_send(chat_id, tr(uid, "proxy_help_text"))
             return
 
-        # ═══════ قائمة البروكسيات للمستخدم ═══════
         if c.data == "proxy_menu":
             main_bot.answer_callback_query(c.id)
             kb = InlineKeyboardMarkup(row_width=2)
@@ -1790,7 +1879,6 @@ def main_on_callback(c):
                     gc_send(chat_id, tr(uid, "test_result",
                                         alive=len(alive), dead=dead,
                                         total=len(proxy_list)))
-                    # علّم الميتة
                     alive_set = set(alive)
                     for p in proxy_list:
                         if p not in alive_set:
@@ -2096,7 +2184,6 @@ def main_on_callback(c):
 
             def _clean():
                 try:
-                    # احذف: banned=1 أو (fail>success و fail>=5)
                     db_exec("DELETE FROM proxies WHERE banned=1")
                     db_exec("DELETE FROM proxies WHERE fail>success AND fail>=5")
                     left = db_exec("SELECT COUNT(*) c FROM proxies WHERE banned=0",
@@ -2182,7 +2269,7 @@ def main_on_callback(c):
                 with _gc_lock:
                     try:
                         def cb(i, total, ok, gold):
-                            if i % 5 == 0 or i == total:
+                            if i == total or ok > 0:
                                 try:
                                     main_bot.send_message(chat_id,
                                         f"⏳ {i}/{total} | ✅ {ok} | 💰 {gold}")
@@ -2326,7 +2413,6 @@ def step_set_start(m):
 
 
 def step_add_proxy(m):
-    """إضافة بروكسيات بالجملة — خاصة بالمستخدم."""
     if _cancel.pop(m.from_user.id, None):
         return
     uid = m.from_user.id
@@ -2368,7 +2454,6 @@ def step_add_proxy(m):
 
 
 def step_owner_add_proxy(m):
-    """إضافة بروكسيات بالجملة — عامة للجميع."""
     text = (m.text or "").strip()
     if not text:
         return
@@ -2394,19 +2479,39 @@ def step_owner_del_proxy(m):
 
 
 def step_edit_points(m):
-    p = m.text.split()
-    if len(p) != 2:
+    raw = (m.text or "").strip()
+    parts = raw.split()
+    if len(parts) < 2:
         main_bot.reply_to(m, tr(m.from_user.id, "wrong_format"))
         return
-    uid = find_uid_by_input(p[0])
+
+    identifier = parts[0]
+    rest = "".join(parts[1:])
+
     try:
-        pts = int(p[1])
+        pts = int(rest)
     except ValueError:
         main_bot.reply_to(m, tr(m.from_user.id, "numbers_only"))
         return
-    if uid:
-        set_user(uid, points=pts)
-        main_bot.reply_to(m, f"✅ {uid} = {pts}")
+
+    target_uid = find_uid_by_input(identifier)
+    if not target_uid:
+        main_bot.reply_to(m, "❌ المستخدم غير موجود. تأكد أنه استخدم /start")
+        return
+
+    if rest.startswith("+"):
+        add_points(target_uid, abs(pts))
+        new_val = get_points(target_uid)
+        main_bot.reply_to(m,
+            f"✅ +{abs(pts)} → {target_uid}\n💎 الجديد: {new_val}")
+    elif rest.startswith("-"):
+        add_points(target_uid, -abs(pts))
+        new_val = get_points(target_uid)
+        main_bot.reply_to(m,
+            f"✅ -{abs(pts)} → {target_uid}\n💎 الجديد: {new_val}")
+    else:
+        set_user(target_uid, points=pts)
+        main_bot.reply_to(m, f"✅ {target_uid} = {pts}")
 
 
 def step_broadcast(m):
@@ -2425,6 +2530,74 @@ def step_broadcast(m):
     main_bot.reply_to(m, f"✅ {sent} | ❌ {failed}")
 
 
+# ═══════════ ROBUST POLLING ═══════════
+def robust_poller():
+    last_id = 0
+    consecutive_409 = 0
+    notified_409 = False
+
+    try:
+        main_bot.delete_webhook(drop_pending_updates=False)
+        log.info("webhook cleared for polling")
+    except Exception as e:
+        log.warning(f"delete_webhook: {e}")
+
+    try:
+        init_updates = main_bot.get_updates(offset=-1, timeout=5)
+        if init_updates:
+            last_id = init_updates[-1].update_id
+    except Exception:
+        pass
+
+    while True:
+        try:
+            updates = main_bot.get_updates(
+                offset=last_id + 1,
+                timeout=25,
+                long_polling_timeout=20,
+                allowed_updates=["message", "callback_query",
+                                 "edited_message"],
+            )
+            consecutive_409 = 0
+            notified_409 = False
+
+            for u in updates:
+                last_id = u.update_id
+                try:
+                    main_bot.process_new_updates([u])
+                except Exception as e:
+                    log.error(f"process #{u.update_id}: {e}")
+
+        except Exception as e:
+            err = str(e)
+            if "409" in err or "Conflict" in err:
+                consecutive_409 += 1
+                wait = min(45, 3 * consecutive_409)
+                log.warning(f"409 #{consecutive_409} — wait {wait}s")
+                if consecutive_409 >= 3 and not notified_409:
+                    try:
+                        main_bot.send_message(
+                            OWNER_ID,
+                            "⚠️ <b>تحذير 409</b>\n"
+                            "━━━━━━━━━━━━━━━\n"
+                            "بوت آخر يعمل بنفس التوكن!\n\n"
+                            "📌 <b>أوقف:</b>\n"
+                            "• FPS.ms\n"
+                            "• أي استضافة أخرى\n"
+                            "• جهازك الشخصي\n\n"
+                            "<i>البوت يستمر في المحاولة تلقائياً.</i>",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    notified_409 = True
+                time.sleep(wait)
+            elif "timed out" in err.lower():
+                pass
+            else:
+                log.error(f"poll error: {err}")
+                time.sleep(5)
+
+
 # ═══════════════════════ MAIN ═══════════════════════
 if __name__ == "__main__":
     _init_db()
@@ -2433,22 +2606,15 @@ if __name__ == "__main__":
     log.info(f"Starting bot | GC token: {'OK' if GC_TOKEN else 'MISSING'} "
              f"| reimport +{u}u +{p}p")
 
-    # Flask health server (thread منفصل)
+    # Flask health
     threading.Thread(target=run_health_server, daemon=True).start()
     log.info(f"Health server on 0.0.0.0:{PORT}")
 
-    try:
-        main_bot.delete_webhook(drop_pending_updates=True)
-        log.info("webhook cleared")
-    except Exception as e:
-        log.warning(f"delete_webhook: {e}")
+    # Self-ping (لا يحتاج cron-job خارجي)
+    threading.Thread(target=self_ping_loop, daemon=True).start()
 
+    # auto harvest
     threading.Thread(target=auto_harvest_loop, daemon=True).start()
 
-    log.info("Polling started")
-    while True:
-        try:
-            main_bot.infinity_polling(timeout=30, long_polling_timeout=20)
-        except Exception as e:
-            log.error(f"polling crashed: {e}")
-            time.sleep(5)
+    log.info("Robust polling starting...")
+    robust_poller()
